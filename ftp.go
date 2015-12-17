@@ -87,7 +87,7 @@ func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
 		return nil, err
 	}
 
-	err = c.feat()
+	err = c.Feat()
 	if err != nil {
 		c.Quit()
 		return nil, err
@@ -123,13 +123,19 @@ func (c *ServerConn) Login(user, password string) error {
 		return err
 	}
 
+	// logged, check features again
+	if err = c.Feat(); err != nil {
+		c.Quit()
+		return err
+	}
+
 	return nil
 }
 
 // feat issues a FEAT FTP command to list the additional commands supported by
 // the remote FTP server.
 // FEAT is described in RFC 2389
-func (c *ServerConn) feat() error {
+func (c *ServerConn) Feat() error {
 	code, message, err := c.cmd(-1, "FEAT")
 	if err != nil {
 		return err
@@ -161,6 +167,11 @@ func (c *ServerConn) feat() error {
 	}
 
 	return nil
+}
+
+// Features return allowed features from feat command response
+func (c *ServerConn) Features() map[string]string {
+	return c.features
 }
 
 // epsv issues an "EPSV" command to get a port number for a data connection.
@@ -239,6 +250,11 @@ func (c *ServerConn) openDataConn() (net.Conn, error) {
 	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
 
 	return net.DialTimeout("tcp", addr, c.timeout)
+}
+
+// Exec runs a command and check for expected code
+func (c *ServerConn) Exec(expected int, format string, args ...interface{}) (int, string, error) {
+	return c.cmd(expected, format, args...)
 }
 
 // cmd is a helper function to execute a command and check for the expected FTP

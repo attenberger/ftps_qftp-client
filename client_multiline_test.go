@@ -81,7 +81,7 @@ func TestMultiline(t *testing.T) {
 		t.Skip("skipping test in short mode.")
 	}
 
-	address := "localhost:2121"
+	address := "127.0.0.1:2121"
 	mock := newFtpMock(t, address)
 	defer mock.Close()
 
