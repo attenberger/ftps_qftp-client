@@ -1,4 +1,4 @@
-package ftp
+package client_ftp
 
 import (
 	"bytes"

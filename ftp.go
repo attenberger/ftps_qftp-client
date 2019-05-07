@@ -1,5 +1,5 @@
 // Package ftp implements a FTP client as described in RFC 959.
-package ftp
+package client_ftp
 
 import (
 	"bufio"
@@ -45,12 +45,12 @@ type response struct {
 }
 
 // Connect is an alias to Dial, for backward compatibility
-func Connect(addr string) (*ServerConn, error) {
+func Connect(addr string) (*ServerConn, string /*welcome message*/, int /*welcome responsecode*/, error) {
 	return Dial(addr)
 }
 
 // Dial is like DialTimeout with no timeout
-func Dial(addr string) (*ServerConn, error) {
+func Dial(addr string) (*ServerConn, string /*welcome message*/, int /*welcome responsecode*/, error) {
 	return DialTimeout(addr, 0)
 }
 
@@ -58,42 +58,42 @@ func Dial(addr string) (*ServerConn, error) {
 //
 // It is generally followed by a call to Login() as most FTP commands require
 // an authenticated user.
-func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
+func DialTimeout(addr string, timeout time.Duration) (*ServerConn, string /*welcome message*/, int /*welcome responsecode*/, error) {
 	tconn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return nil, err
+		return nil, "", -1, err
 	}
 
 	// Use the resolved IP address in case addr contains a domain name
 	// If we use the domain name, we might not resolve to the same IP.
-	remoteAddr := tconn.RemoteAddr().String()
-	host, _, err := net.SplitHostPort(remoteAddr)
+	/*remoteAddr := tconn.RemoteAddr().String()
+	addr, _, err = net.SplitHostPort(remoteAddr)
 	if err != nil {
-		return nil, err
-	}
+		return nil, "", -1, err
+	}*/
 
 	conn := textproto.NewConn(tconn)
 
 	c := &ServerConn{
 		conn:     conn,
-		host:     host,
+		host:     addr,
 		timeout:  timeout,
 		features: make(map[string]string),
 	}
 
-	_, _, err = c.conn.ReadResponse(StatusReady)
+	responseCode, responseMessage, err := c.conn.ReadResponse(StatusReady)
 	if err != nil {
 		c.Quit()
-		return nil, err
+		return nil, "", -1, err
 	}
 
 	err = c.Feat()
 	if err != nil {
 		c.Quit()
-		return nil, err
+		return nil, "", -1, err
 	}
 
-	return c, nil
+	return c, responseMessage, responseCode, nil
 }
 
 // Login authenticates the client with specified user and password.
