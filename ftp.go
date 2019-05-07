@@ -27,12 +27,13 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	conn      *textproto.Conn
-	tcpconn   net.Conn
-	tlsConfig *tls.Config
-	host      string
-	timeout   time.Duration
-	features  map[string]string
+	conn       *textproto.Conn
+	tcpconn    net.Conn
+	tlsConfig  *tls.Config
+	tlsSecured bool
+	host       string
+	timeout    time.Duration
+	features   map[string]string
 }
 
 // Entry describes a file and is returned by List().
@@ -71,11 +72,12 @@ func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerCo
 
 	// Use the resolved IP address in case addr contains a domain name
 	// If we use the domain name, we might not resolve to the same IP.
-	/*remoteAddr := tconn.RemoteAddr().String()
-	addr, _, err = net.SplitHostPort(remoteAddr)
+	//remoteAddr := tconn.RemoteAddr().String()
+	//addr, _, err = net.SplitHostPort(remoteAddr)
+	addr, _, err = net.SplitHostPort(addr)
 	if err != nil {
-		return nil, "", -1, err
-	}*/
+		return nil, err
+	}
 
 	conn := textproto.NewConn(tconn)
 	tlsConfig, err := generateTLSConfig(certfile)
@@ -132,6 +134,7 @@ func (c *ServerConn) AuthTLS() error {
 		return err
 	}
 	c.conn = textproto.NewConn(tls.Client(c.tcpconn, c.tlsConfig))
+	c.tlsSecured = true
 	return nil
 }
 
@@ -287,8 +290,15 @@ func (c *ServerConn) openDataConn() (net.Conn, error) {
 
 	// Build the new net address string
 	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
-
-	return net.DialTimeout("tcp", addr, c.timeout)
+	conn, err := net.DialTimeout("tcp", addr, c.timeout)
+	if err != nil || !c.tlsSecured {
+		return conn, err
+	}
+	conn = tls.Client(conn, c.tlsConfig)
+	if conn == nil {
+		return conn, errors.New("Error while seting up tls for the connection.")
+	}
+	return conn, nil
 }
 
 // Exec runs a command and check for expected code
