@@ -3,8 +3,11 @@ package client_ftp
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/textproto"
 	"strconv"
@@ -24,10 +27,12 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	conn     *textproto.Conn
-	host     string
-	timeout  time.Duration
-	features map[string]string
+	conn      *textproto.Conn
+	tcpconn   net.Conn
+	tlsConfig *tls.Config
+	host      string
+	timeout   time.Duration
+	features  map[string]string
 }
 
 // Entry describes a file and is returned by List().
@@ -45,23 +50,23 @@ type response struct {
 }
 
 // Connect is an alias to Dial, for backward compatibility
-func Connect(addr string) (connection *ServerConn, code int, message string, error error) {
-	return Dial(addr)
+func Connect(addr string, certfile string) (*ServerConn, error) {
+	return Dial(addr, certfile)
 }
 
 // Dial is like DialTimeout with no timeout
-func Dial(addr string) (connection *ServerConn, code int, message string, error error) {
-	return DialTimeout(addr, 0)
+func Dial(addr string, certfile string) (*ServerConn, error) {
+	return DialTimeout(addr, 0, certfile)
 }
 
 // DialTimeout initializes the connection to the specified ftp server address.
 //
 // It is generally followed by a call to Login() as most FTP commands require
 // an authenticated user.
-func DialTimeout(addr string, timeout time.Duration) (connection *ServerConn, code int, message string, error error) {
+func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerConn, error) {
 	tconn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
-		return nil, 0, "", err
+		return nil, err
 	}
 
 	// Use the resolved IP address in case addr contains a domain name
@@ -73,27 +78,61 @@ func DialTimeout(addr string, timeout time.Duration) (connection *ServerConn, co
 	}*/
 
 	conn := textproto.NewConn(tconn)
-
-	c := &ServerConn{
-		conn:     conn,
-		host:     addr,
-		timeout:  timeout,
-		features: make(map[string]string),
+	tlsConfig, err := generateTLSConfig(certfile)
+	if err != nil {
+		return nil, err
 	}
 
-	responseCode, responseMessage, err := c.conn.ReadResponse(StatusReady)
+	c := &ServerConn{
+		conn:      conn,
+		tcpconn:   tconn,
+		tlsConfig: &tlsConfig,
+		host:      addr,
+		timeout:   timeout,
+		features:  make(map[string]string),
+	}
+
+	_, _, err = c.conn.ReadResponse(StatusReady)
 	if err != nil {
 		c.Quit()
-		return nil, -1, "", err
+		return nil, err
 	}
 
 	err = c.Feat()
 	if err != nil {
 		c.Quit()
-		return nil, -1, "", err
+		return nil, err
 	}
 
-	return c, responseCode, responseMessage, nil
+	return c, nil
+}
+
+// Generates from the specified certifiate file a tls configuration
+func generateTLSConfig(certfile string) (tls.Config, error) {
+	tlsConfig := tls.Config{}
+	tlsConfig.InsecureSkipVerify = true
+	certficate, err := ioutil.ReadFile(certfile)
+	if err != nil {
+		return tlsConfig, err
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM([]byte(certficate)) {
+		return tlsConfig, errors.New("ERROR: Fehler beim parsen des Serverzertifikats.\n")
+	}
+	return tlsConfig, nil
+}
+
+// Negotiates TLS for the connection
+func (c *ServerConn) AuthTLS() error {
+	if c.tlsConfig == nil {
+		return errors.New("TLS-configuration ist missing.")
+	}
+	_, _, err := c.cmd(StatusAuthTLS, "AUTH TLS")
+	if err != nil {
+		return err
+	}
+	c.conn = textproto.NewConn(tls.Client(c.tcpconn, c.tlsConfig))
+	return nil
 }
 
 // Login authenticates the client with specified user and password.
@@ -666,13 +705,9 @@ func (c *ServerConn) Logout() error {
 
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
-func (c *ServerConn) Quit() (code int, message string, error error) {
-	code, message, err := c.cmd(StatusClosing, "QUIT")
-	if code == StatusClosing && err == nil {
-		return code, message, c.conn.Close()
-	} else {
-		return code, message, err
-	}
+func (c *ServerConn) Quit() error {
+	c.conn.Cmd("QUIT")
+	return c.conn.Close()
 }
 
 // Read implements the io.Reader interface on a FTP data connection.
