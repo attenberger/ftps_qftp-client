@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,7 +29,7 @@ func main() {
 
 	consoleReader := bufio.NewReader(os.Stdin)
 
-	connection, responseMessage, responseCode, err := client_ftp.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30)
+	connection, responseCode, responseMessage, err := client_ftp.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30)
 	if err != nil {
 		fmt.Println("Error opening connection to server: " + err.Error())
 		return
@@ -46,15 +47,19 @@ func main() {
 			fmt.Println("Command was to long.")
 			continue
 		}
-		switch string(line) {
+		commandParts := strings.Split(string(line), " ")
+		switch strings.ToUpper(commandParts[0]) {
 		case "QUIT":
-			err = connection.Quit()
+			responseCode, responseMessage, err = connection.Quit()
 			if err != nil {
 				fmt.Println("Error while closing connection: " + err.Error())
 			} else {
+				fmt.Println(strconv.Itoa(responseCode) + " " + responseMessage)
 				fmt.Println("Connection closed.")
 				return
 			}
+		default:
+			fmt.Println("Command at this client not available.")
 		}
 	}
 }
