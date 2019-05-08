@@ -1,3 +1,8 @@
+// Commandline for the FTP-Client to access an FTP-Server over FTPS
+// Arguments for starting the client are -cert (mandatory), -host and -port
+// to specify the servers TLS-/X.509-certificate (filename), his hostname and
+// controlport.
+
 package main
 
 import (
@@ -32,11 +37,11 @@ func main() {
 	}
 
 	// set working directory
-	user, err := user.Current()
+	currentUser, err := user.Current()
 	if err != nil {
-		fmt.Println("Unable to read the current user, to find out the local home directory.")
+		fmt.Println("Unable to read the current currentUser, to find out the local home directory.")
 	}
-	err = os.Chdir(user.HomeDir)
+	err = os.Chdir(currentUser.HomeDir)
 	if err != nil {
 		fmt.Println("Error changing working directory.")
 	}
@@ -100,6 +105,8 @@ func main() {
 	}
 }
 
+// Generates a map of functions for all supported commands of the userinterface.
+// The commands are not necessarily FTP-Commands.
 func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, parameters ...string) error {
 
 	var functions = make(map[string]func(connection *client_ftp.ServerConn, parameters ...string) error)
@@ -267,6 +274,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 			return errors.New("File with this name already exists in local folder.")
 		}
 		file, err := os.Create(localpath)
+		defer file.Close()
 		if err != nil {
 			return errors.New("Error while creating the local file. " + err.Error())
 		}
@@ -275,6 +283,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		if err != nil {
 			return err
 		}
+		defer reader.Close()
 		_, err = io.Copy(file, reader)
 		if err != nil {
 			return errors.New("Error while writing file to local file. " + err.Error())

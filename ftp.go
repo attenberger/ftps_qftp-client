@@ -79,10 +79,13 @@ func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerCo
 		return nil, err
 	}
 
+	var tlsConfig tls.Config
 	conn := textproto.NewConn(tconn)
-	tlsConfig, err := generateTLSConfig(certfile)
-	if err != nil {
-		return nil, err
+	if certfile != "" {
+		tlsConfig, err = generateTLSConfig(certfile)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	c := &ServerConn{
