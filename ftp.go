@@ -27,13 +27,14 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	conn       *textproto.Conn
-	tcpconn    net.Conn
-	tlsConfig  *tls.Config
-	tlsSecured bool
-	host       string
-	timeout    time.Duration
-	features   map[string]string
+	conn                        *textproto.Conn
+	tcpconn                     net.Conn
+	tlsConfig                   *tls.Config
+	tlsSecuredControlConnection bool
+	tlsSecuredDataConnection    bool
+	host                        string
+	timeout                     time.Duration
+	features                    map[string]string
 }
 
 // Entry describes a file and is returned by List().
@@ -132,12 +133,27 @@ func (c *ServerConn) AuthTLS() error {
 	if c.tlsConfig == nil {
 		return errors.New("TLS-configuration ist missing.")
 	}
+
+	// Secure control connection
 	_, _, err := c.cmd(StatusAuthTLS, "AUTH TLS")
 	if err != nil {
-		return err
+		return errors.New("Error while AUTH TLS command. " + err.Error())
 	}
 	c.conn = textproto.NewConn(tls.Client(c.tcpconn, c.tlsConfig))
-	c.tlsSecured = true
+	c.tlsSecuredControlConnection = true
+
+	// Secure data connection
+	_, _, err = c.cmd(StatusCommandOK, "PBSZ 0")
+	if err != nil {
+		return errors.New("Error while PBSZ 0 command. " + err.Error())
+	}
+
+	_, _, err = c.cmd(StatusCommandOK, "PROT P")
+	if err != nil {
+		return errors.New("Error while PBSZ 0 command. " + err.Error())
+	}
+	c.tlsSecuredDataConnection = true
+
 	return nil
 }
 
@@ -294,12 +310,14 @@ func (c *ServerConn) openDataConn() (net.Conn, error) {
 	// Build the new net address string
 	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, c.timeout)
-	if err != nil || !c.tlsSecured {
+	if err != nil {
 		return conn, err
 	}
-	conn = tls.Client(conn, c.tlsConfig)
-	if conn == nil {
-		return conn, errors.New("Error while seting up tls for the connection.")
+	if c.tlsSecuredDataConnection {
+		conn = tls.Client(conn, c.tlsConfig)
+		if conn == nil {
+			return conn, errors.New("Error while seting up tls for the connection.")
+		}
 	}
 	return conn, nil
 }
