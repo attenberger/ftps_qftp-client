@@ -1,3 +1,6 @@
+// Contains the functions for parallel transfer with multiple TCP connections.
+// Store and receive of files is possible.
+
 package client_ftp
 
 import (
@@ -14,6 +17,7 @@ const (
 	Store    = TransferDirction(2)
 )
 
+// Task to inform a go routine which transfer should be performed
 type TransferTask struct {
 	localpath  string
 	remotepath string
@@ -21,15 +25,19 @@ type TransferTask struct {
 	finished   bool
 }
 
+// Creates a new TransferTask
 func NewTransferTask(direction TransferDirction, localpath string, remotepath string) TransferTask {
 	return TransferTask{localpath: localpath, remotepath: remotepath, direction: direction, finished: false}
 }
 
-func (c *ServerConn) parallelTransfer(serveraddr string, dirctory string, secure bool, servercertfilename string, taskchannel chan TransferTask, returnchannel chan error) {
+// Runs a parallel transfer.
+// In the taskChannel it gets the TransferTask to perform.
+// In the returnChannel it returns occured error or nil for success
+func (c *ServerConn) parallelTransfer(serveraddr string, dirctory string, secure bool, serverCertFilename string, taskChannel chan TransferTask, returnChannel chan error) {
 	// Open Controlconnection
-	conn, err := DialTimeout(serveraddr, time.Second*30, servercertfilename)
+	conn, err := DialTimeout(serveraddr, time.Second*30, serverCertFilename)
 	if err != nil {
-		returnchannel <- errors.New("Go routine reset. " + err.Error())
+		returnChannel <- errors.New("Go routine reset. " + err.Error())
 		return
 	}
 	defer conn.Quit()
@@ -37,38 +45,39 @@ func (c *ServerConn) parallelTransfer(serveraddr string, dirctory string, secure
 	if secure {
 		err = conn.AuthTLS()
 		if err != nil {
-			returnchannel <- errors.New("Go routine reset. " + err.Error())
+			returnChannel <- errors.New("Go routine reset. " + err.Error())
 			return
 		}
 	}
 	// Login in
 	err = conn.Login(c.username, c.password)
 	if err != nil {
-		returnchannel <- errors.New("Go routine reset. " + err.Error())
+		returnChannel <- errors.New("Go routine reset. " + err.Error())
 		return
 	}
 	// Change to directory of the main connection
 	err = conn.ChangeDir(dirctory)
 	if err != nil {
-		returnchannel <- errors.New("Go routine reset. " + err.Error())
+		returnChannel <- errors.New("Go routine reset. " + err.Error())
 		return
 	}
 
 	// run tasks
 	for {
-		task := <-taskchannel
+		task := <-taskChannel
 		if task.finished {
 			return
 		} else if task.direction == Store {
-			returnchannel <- conn.parallelStorTask(task)
+			returnChannel <- conn.parallelStorTask(task)
 		} else if task.direction == Retrieve {
-			returnchannel <- conn.parallelRetrTask(task)
+			returnChannel <- conn.parallelRetrTask(task)
 		} else {
-			returnchannel <- errors.New("Unknown direction for transfer.")
+			returnChannel <- errors.New("Unknown direction for transfer.")
 		}
 	}
 }
 
+// Stores a file at the server within a parallel transfer.
 func (c *ServerConn) parallelStorTask(task TransferTask) error {
 	file, err := os.Open(task.localpath)
 	defer file.Close()
@@ -83,6 +92,7 @@ func (c *ServerConn) parallelStorTask(task TransferTask) error {
 	return nil
 }
 
+// Receives a file at the server within a parallel transfer.
 func (c *ServerConn) parallelRetrTask(task TransferTask) error {
 	// Check if file already exists at client
 	if _, err := os.Stat(task.localpath); os.IsExist(err) {
