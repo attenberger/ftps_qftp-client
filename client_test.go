@@ -29,14 +29,18 @@ const (
 )
 
 func TestConnPASV(t *testing.T) {
-	testConn(t, true)
+	testConn(t, true, true)
 }
 
 func TestConnEPSV(t *testing.T) {
-	testConn(t, false)
+	testConn(t, false, true)
 }
 
-func testConn(t *testing.T, passive bool) {
+func TestConnInsecure(t *testing.T) {
+	testConn(t, false, false)
+}
+
+func testConn(t *testing.T, passive bool, secure bool) {
 	if testing.Short() {
 		t.Skip("skipping test in short mode.")
 	}
@@ -50,9 +54,11 @@ func testConn(t *testing.T, passive bool) {
 		delete(c.features, "EPSV")
 	}
 
-	err = c.AuthTLS()
-	if err != nil {
-		t.Fatal(err)
+	if secure {
+		err = c.AuthTLS()
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	err = c.Login(username, password)
