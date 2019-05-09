@@ -32,7 +32,11 @@ type ServerConn struct {
 	tlsConfig                   *tls.Config
 	tlsSecuredControlConnection bool
 	tlsSecuredDataConnection    bool
-	host                        string
+	hostname                    string
+	hostcontrolport             string
+	username                    string
+	password                    string
+	certfilename                string
 	timeout                     time.Duration
 	features                    map[string]string
 }
@@ -75,7 +79,7 @@ func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerCo
 	// If we use the domain name, we might not resolve to the same IP.
 	//remoteAddr := tconn.RemoteAddr().String()
 	//addr, _, err = net.SplitHostPort(remoteAddr)
-	addr, _, err = net.SplitHostPort(addr)
+	addr, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
@@ -90,12 +94,14 @@ func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerCo
 	}
 
 	c := &ServerConn{
-		conn:      conn,
-		tcpconn:   tconn,
-		tlsConfig: &tlsConfig,
-		host:      addr,
-		timeout:   timeout,
-		features:  make(map[string]string),
+		conn:            conn,
+		tcpconn:         tconn,
+		tlsConfig:       &tlsConfig,
+		hostname:        addr,
+		hostcontrolport: port,
+		certfilename:    certfile,
+		timeout:         timeout,
+		features:        make(map[string]string),
 	}
 
 	_, _, err = c.conn.ReadResponse(StatusReady)
@@ -177,6 +183,9 @@ func (c *ServerConn) Login(user, password string) error {
 	default:
 		return errors.New(message)
 	}
+
+	c.username = user
+	c.password = password
 
 	// Switch to binary mode
 	_, _, err = c.cmd(StatusCommandOK, "TYPE I")
@@ -308,7 +317,7 @@ func (c *ServerConn) openDataConn() (net.Conn, error) {
 	}
 
 	// Build the new net address string
-	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
+	addr := net.JoinHostPort(c.hostname, strconv.Itoa(port))
 	conn, err := net.DialTimeout("tcp", addr, c.timeout)
 	if err != nil {
 		return conn, err
@@ -686,6 +695,57 @@ func (c *ServerConn) StorFrom(path string, r io.Reader, offset uint64) error {
 
 	_, _, err = c.conn.ReadResponse(StatusClosingDataConnection)
 	return err
+}
+
+// MultipleTransfer issues STOR FTP commands in parallel connections to store multiple files
+// to the remote FTP server.
+// Stor creates the specified files as specified in tasks. The number of parallel
+// connections can be limited. nrParallel < 0 means no limit
+//
+// Hint: io.Pipe() can be used if an io.Writer is required.
+func (c *ServerConn) MultipleTransfer(tasks []TransferTask, nrParallel int) error {
+	currentdirctory, err := c.CurrentDir()
+	if err != nil {
+		return err
+	}
+
+	// Not more connections than files to store or negative
+	if len(tasks) < nrParallel || nrParallel < 0 {
+		nrParallel = len(tasks)
+	}
+
+	// Start goroutines for parallel connections and provide the channels for communication
+	taskChannel := make(chan TransferTask, len(tasks))
+	returnChannel := make(chan error, len(tasks))
+	for i := 0; i < nrParallel; i++ {
+		go c.parallelTransfer(c.hostname+":"+c.hostcontrolport, currentdirctory, c.tlsSecuredControlConnection, c.certfilename, taskChannel, returnChannel)
+	}
+
+	// Write all tasks to the channel including the finishing message
+	for _, task := range tasks {
+		task.finished = false
+		taskChannel <- task
+	}
+	for i := 0; i < nrParallel; i++ {
+		taskChannel <- TransferTask{finished: true}
+	}
+
+	errorMessage := ""
+	// Wait for replais of the STORs in the goroutines
+	for normalReplay, goRoutineResetReply := 0, 0; normalReplay < len(tasks) && goRoutineResetReply < nrParallel; normalReplay++ {
+		replay := <-returnChannel
+		if replay != nil {
+			errorMessage = errorMessage + "\n" + replay.Error()
+			if strings.HasPrefix("Go routine reset.", replay.Error()) {
+				goRoutineResetReply++
+			}
+		}
+	}
+	if errorMessage == "" {
+		return nil
+	} else {
+		return errors.New(errorMessage)
+	}
 }
 
 // Rename renames a file on the remote FTP server.

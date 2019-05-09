@@ -89,7 +89,7 @@ var statusText = map[int]string{
 	StatusCanNotOpenDataConnection: "Can't open data connection.",
 	StatusTransfertAborted:         "Connection closed; transfer aborted.",
 	StatusInvalidCredentials:       "Invalid username or password.",
-	StatusHostUnavailable:          "Requested host unavailable.",
+	StatusHostUnavailable:          "Requested hostname unavailable.",
 	StatusFileActionIgnored:        "Requested file action not taken.",
 	StatusActionAborted:            "Requested action aborted. Local error in processing.",
 	Status452:                      "Insufficient storage space in system.",

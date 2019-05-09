@@ -210,6 +210,36 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return connection.MakeDir(parameters[0])
 	}
 
+	functions["MTRAN"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+		if len(parameters) < 4 || len(parameters)%3 != 1 {
+			return errors.New("MTRAN needs at least four parameters. The first has to be the number of parallel connection, " +
+				"the rest each a triple of transferdirection, local- and remotepath. Transferdirection is indicated by \"<\" " +
+				" (retrieve from Server) and \">\" (store at server).")
+		}
+		parallelConnection, err := strconv.Atoi(parameters[0])
+		if err != nil {
+			return errors.New("Error converting number of parallel connections. " + err.Error())
+		}
+		tasks := make([]client_ftp.TransferTask, 0, (len(parameters)-1)/3)
+		for i := 1; i < len(parameters); i = i + 3 {
+			var direction client_ftp.TransferDirction
+			switch parameters[i] {
+			case "<":
+				direction = client_ftp.Retrieve
+			case ">":
+				direction = client_ftp.Store
+			default:
+				return errors.New(parameters[i] + " is not a vaild transfer direction. \"<\" or \">\" expected.")
+			}
+			tasks = append(tasks, client_ftp.NewTransferTask(direction, parameters[i+1], parameters[i+2]))
+		}
+		err = connection.MultipleTransfer(tasks, parallelConnection)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+
 	functions["NLST"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
 		var entrys []string
 		var err error
@@ -291,9 +321,6 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 				errortext = errortext + " Error while closing reader from server. " + err.Error()
 			}
 			return errors.New(errortext)
-		}
-		if file.Close() != nil {
-			return errors.New("Error while closing local file. " + err.Error())
 		}
 		err = reader.Close()
 		if err != nil {
