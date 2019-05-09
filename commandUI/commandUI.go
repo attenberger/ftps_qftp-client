@@ -283,13 +283,21 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		if err != nil {
 			return err
 		}
-		defer reader.Close()
 		_, err = io.Copy(file, reader)
 		if err != nil {
-			return errors.New("Error while writing file to local file. " + err.Error())
+			errortext := "Error while writing file to local file. " + err.Error()
+			err = reader.Close()
+			if err != nil {
+				errortext = errortext + " Error while closing reader from server. " + err.Error()
+			}
+			return errors.New(errortext)
 		}
 		if file.Close() != nil {
 			return errors.New("Error while closing local file. " + err.Error())
+		}
+		err = reader.Close()
+		if err != nil {
+			return errors.New(" Error while closing reader from server. " + err.Error())
 		}
 		return nil
 	}
