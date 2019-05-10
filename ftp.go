@@ -1,15 +1,25 @@
 // Package ftp implements a FTP client as described in RFC 959.
-package ftp
+package client_ftp
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
+	"github.com/attenberger/quic-go"
 	"io"
-	"net"
+	"io/ioutil"
 	"net/textproto"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+)
+
+const (
+	MaxStreamsPerSession = 3       // like default in vsftpd // but separate limit for uni- and bidirectional streams
+	MaxStreamFlowControl = 6291456 // like OpenSuse TCP /proc/sys/net/ipv4/tcp_rmem
 )
 
 // EntryType describes the different types of an Entry.
@@ -24,10 +34,11 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	conn     *textproto.Conn
-	host     string
-	timeout  time.Duration
-	features map[string]string
+	controlStream      *textproto.Conn
+	dataRetriveStreams map[quic.StreamID]quic.ReceiveStream
+	quicSession        quic.Session
+	streamOpenMutex    sync.Mutex
+	features           map[string]string
 }
 
 // Entry describes a file and is returned by List().
@@ -40,48 +51,54 @@ type Entry struct {
 
 // response represent a data-connection
 type response struct {
-	conn net.Conn
+	conn quic.ReceiveStream
 	c    *ServerConn
 }
 
 // Connect is an alias to Dial, for backward compatibility
-func Connect(addr string) (*ServerConn, error) {
-	return Dial(addr)
+func Connect(addr string, certfile string) (*ServerConn, error) {
+	return Dial(addr, certfile)
 }
 
 // Dial is like DialTimeout with no timeout
-func Dial(addr string) (*ServerConn, error) {
-	return DialTimeout(addr, 0)
+func Dial(addr string, certfile string) (*ServerConn, error) {
+	return DialTimeout(addr, 0, certfile)
 }
 
 // DialTimeout initializes the connection to the specified ftp server address.
 //
 // It is generally followed by a call to Login() as most FTP commands require
 // an authenticated user.
-func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
-	tconn, err := net.DialTimeout("tcp", addr, timeout)
+func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerConn, error) {
+
+	tlsConfig, err := generateTLSConfig(certfile)
 	if err != nil {
 		return nil, err
 	}
 
-	// Use the resolved IP address in case addr contains a domain name
-	// If we use the domain name, we might not resolve to the same IP.
-	remoteAddr := tconn.RemoteAddr().String()
-	host, _, err := net.SplitHostPort(remoteAddr)
+	quicConfig := generateQUICConfig(timeout)
+
+	quicSession, err := quic.DialAddr(addr, tlsConfig, quicConfig)
 	if err != nil {
 		return nil, err
 	}
 
-	conn := textproto.NewConn(tconn)
+	controlStreamRaw, err := quicSession.AcceptStream()
+	if err != nil {
+		return nil, err
+	}
+
+	controlStream := textproto.NewConn(controlStreamRaw)
 
 	c := &ServerConn{
-		conn:     conn,
-		host:     host,
-		timeout:  timeout,
-		features: make(map[string]string),
+		controlStream:      controlStream,
+		dataRetriveStreams: make(map[quic.StreamID]quic.ReceiveStream),
+		quicSession:        quicSession,
+		streamOpenMutex:    sync.Mutex{},
+		features:           make(map[string]string),
 	}
 
-	_, _, err = c.conn.ReadResponse(StatusReady)
+	_, _, err = c.controlStream.ReadResponse(StatusReady)
 	if err != nil {
 		c.Quit()
 		return nil, err
@@ -94,6 +111,36 @@ func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
 	}
 
 	return c, nil
+}
+
+// Generates from the specified certifiate file a tls configuration
+func generateTLSConfig(certfile string) (*tls.Config, error) {
+	tlsConfig := &tls.Config{}
+	tlsConfig.InsecureSkipVerify = true
+	certficate, err := ioutil.ReadFile(certfile)
+	if err != nil {
+		return tlsConfig, err
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM([]byte(certficate)) {
+		return tlsConfig, errors.New("ERROR: Fehler beim parsen des Serverzertifikats.\n")
+	}
+	tlsConfig.RootCAs = rootCAs
+	return tlsConfig, nil
+}
+
+// Generates a quic configuration
+func generateQUICConfig(timeout time.Duration) *quic.Config {
+	config := &quic.Config{}
+	config.ConnectionIDLength = 4
+	config.HandshakeTimeout = timeout
+	config.MaxIncomingUniStreams = MaxStreamsPerSession
+	config.MaxIncomingStreams = MaxStreamsPerSession
+	config.MaxReceiveStreamFlowControlWindow = MaxStreamFlowControl
+	config.MaxReceiveConnectionFlowControlWindow = MaxStreamFlowControl * (MaxStreamsPerSession + 1) // + 1 buffer for controllstreams
+	config.KeepAlive = true
+	config.IdleTimeout = time.Minute * 5
+	return config
 }
 
 // Login authenticates the client with specified user and password.
@@ -174,82 +221,32 @@ func (c *ServerConn) Features() map[string]string {
 	return c.features
 }
 
-// epsv issues an "EPSV" command to get a port number for a data connection.
-func (c *ServerConn) epsv() (port int, err error) {
-	_, line, err := c.cmd(StatusExtendedPassiveMode, "EPSV")
-	if err != nil {
-		return
-	}
+// openDataRetriveStream creates a new FTP data stream to retrieve.
+func (c *ServerConn) getDataRetriveStream(streamID quic.StreamID) (quic.ReceiveStream, error) {
+	c.streamOpenMutex.Lock()
+	defer c.streamOpenMutex.Unlock()
 
-	start := strings.Index(line, "|||")
-	end := strings.LastIndex(line, "|")
-	if start == -1 || end == -1 {
-		err = errors.New("Invalid EPSV response format")
-		return
-	}
-	port, err = strconv.Atoi(line[start+3 : end])
-	return
-}
-
-// pasv issues a "PASV" command to get a port number for a data connection.
-func (c *ServerConn) pasv() (port int, err error) {
-	_, line, err := c.cmd(StatusPassiveMode, "PASV")
-	if err != nil {
-		return
-	}
-
-	// PASV response format : 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2).
-	start := strings.Index(line, "(")
-	end := strings.LastIndex(line, ")")
-	if start == -1 || end == -1 {
-		err = errors.New("Invalid PASV response format")
-		return
-	}
-
-	// We have to split the response string
-	pasvData := strings.Split(line[start+1:end], ",")
-	// Let's compute the port number
-	portPart1, err1 := strconv.Atoi(pasvData[4])
-	if err1 != nil {
-		err = err1
-		return
-	}
-
-	portPart2, err2 := strconv.Atoi(pasvData[5])
-	if err2 != nil {
-		err = err2
-		return
-	}
-
-	// Recompose port
-	port = portPart1*256 + portPart2
-	return
-}
-
-// openDataConn creates a new FTP data connection.
-func (c *ServerConn) openDataConn() (net.Conn, error) {
-	var port int
-	var err error
-
-	//  If features contains nat6 or EPSV => EPSV
-	//  else -> PASV
-	_, nat6Supported := c.features["nat6"]
-	_, epsvSupported := c.features["EPSV"]
-
-	if !nat6Supported && !epsvSupported {
-		port, _ = c.pasv()
-	}
-	if port == 0 {
-		port, err = c.epsv()
+	for {
+		stream, available := c.dataRetriveStreams[streamID]
+		if available {
+			return stream, nil
+		}
+		stream, err := c.quicSession.AcceptUniStream()
 		if err != nil {
 			return nil, err
 		}
+		if stream.StreamID() > streamID {
+			return nil, errors.New("Could not get wanted stream.")
+		}
+		c.dataRetriveStreams[stream.StreamID()] = stream
 	}
+}
 
-	// Build the new net address string
-	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
-
-	return net.DialTimeout("tcp", addr, c.timeout)
+// openNewDataSendStream creates a new FTP data stream to send.
+func (c *ServerConn) getNewDataSendStream() (quic.SendStream, error) {
+	c.streamOpenMutex.Lock()
+	defer c.streamOpenMutex.Unlock()
+	return c.quicSession.OpenUniStreamSync()
 }
 
 // Exec runs a command and check for expected code
@@ -260,22 +257,17 @@ func (c *ServerConn) Exec(expected int, format string, args ...interface{}) (int
 // cmd is a helper function to execute a command and check for the expected FTP
 // return code
 func (c *ServerConn) cmd(expected int, format string, args ...interface{}) (int, string, error) {
-	_, err := c.conn.Cmd(format, args...)
+	_, err := c.controlStream.Cmd(format, args...)
 	if err != nil {
 		return 0, "", err
 	}
 
-	return c.conn.ReadResponse(expected)
+	return c.controlStream.ReadResponse(expected)
 }
 
-// cmdDataConnFrom executes a command which require a FTP data connection.
+// cmdDataReceiveStreamFrom executes a command which require a FTP data stream to receive data.
 // Issues a REST FTP command to specify the number of bytes to skip for the transfer.
-func (c *ServerConn) cmdDataConnFrom(offset uint64, format string, args ...interface{}) (net.Conn, error) {
-	conn, err := c.openDataConn()
-	if err != nil {
-		return nil, err
-	}
-
+func (c *ServerConn) cmdDataReceiveStreamFrom(offset uint64, format string, args ...interface{}) (quic.ReceiveStream, error) {
 	if offset != 0 {
 		_, _, err := c.cmd(StatusRequestFilePending, "REST %d", offset)
 		if err != nil {
@@ -283,23 +275,75 @@ func (c *ServerConn) cmdDataConnFrom(offset uint64, format string, args ...inter
 		}
 	}
 
-	_, err = c.conn.Cmd(format, args...)
+	_, err := c.controlStream.Cmd(format, args...)
 	if err != nil {
-		conn.Close()
 		return nil, err
 	}
 
-	code, msg, err := c.conn.ReadResponse(-1)
+	code, msg, err := c.controlStream.ReadResponse(-1)
 	if err != nil {
-		conn.Close()
 		return nil, err
 	}
 	if code != StatusAlreadyOpen && code != StatusAboutToSend {
-		conn.Close()
+		return nil, &textproto.Error{Code: code, Msg: msg}
+	}
+	msgParts := strings.SplitN(msg, " ", 2)
+	if len(msgParts) != 2 {
+		return nil, errors.New("Returnmessage must contain the stream id separated by a blank.")
+	}
+	streamIDUint64, err := strconv.ParseInt(msgParts[0], 10, 64)
+	if err != nil || streamIDUint64 < 0 || streamIDUint64%4 != 3 {
+		return nil, errors.New("Stream ID has not a valid value for a unidirectional stream from the server.")
+	}
+	streamID := quic.StreamID(streamIDUint64)
+
+	stream, err := c.getDataRetriveStream(streamID)
+	if err != nil {
+		return nil, err
+	}
+
+	return stream, nil
+}
+
+// cmdDataSendStreamFrom executes a command which require a FTP data stream to receive data.
+// Issues a REST FTP command to specify the number of bytes to skip for the transfer.
+func (c *ServerConn) cmdDataSendStreamFrom(offset uint64, format string, args ...interface{}) (quic.SendStream, error) {
+	stream, err := c.getNewDataSendStream()
+	if err != nil {
+		return nil, err
+	}
+
+	if offset != 0 {
+		_, _, err := c.cmd(StatusRequestFilePending, "REST %d", offset)
+		if err != nil {
+			stream.Close()
+			return nil, err
+		}
+	}
+
+	formatParts := strings.SplitN(format, " ", 2)
+	if len(formatParts) < 2 {
+		format = formatParts[0] + fmt.Sprintf(" %d", stream.StreamID())
+	} else {
+		format = formatParts[0] + fmt.Sprintf(" %d ", stream.StreamID()) + formatParts[1]
+	}
+	_, err = c.controlStream.Cmd(format, args...)
+	if err != nil {
+		stream.Close()
+		return nil, err
+	}
+
+	code, msg, err := c.controlStream.ReadResponse(-1)
+	if err != nil {
+		stream.Close()
+		return nil, err
+	}
+	if code != StatusAlreadyOpen && code != StatusAboutToSend {
+		stream.Close()
 		return nil, &textproto.Error{Code: code, Msg: msg}
 	}
 
-	return conn, nil
+	return stream, nil
 }
 
 var errUnsupportedListLine = errors.New("Unsupported LIST line")
@@ -493,13 +537,13 @@ func (e *Entry) setTime(fields []string) (err error) {
 
 // NameList issues an NLST FTP command.
 func (c *ServerConn) NameList(path string) (entries []string, err error) {
-	conn, err := c.cmdDataConnFrom(0, "NLST %s", path)
+	conn, err := c.cmdDataReceiveStreamFrom(0, "NLST %s", path)
 	if err != nil {
 		return
 	}
 
 	r := &response{conn, c}
-	defer r.Close()
+	defer c.controlStream.ReadResponse(StatusClosingDataConnection)
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -513,13 +557,13 @@ func (c *ServerConn) NameList(path string) (entries []string, err error) {
 
 // List issues a LIST FTP command.
 func (c *ServerConn) List(path string) (entries []*Entry, err error) {
-	conn, err := c.cmdDataConnFrom(0, "LIST %s", path)
+	conn, err := c.cmdDataReceiveStreamFrom(0, "LIST %s", path)
 	if err != nil {
 		return
 	}
 
 	r := &response{conn, c}
-	defer r.Close()
+	defer c.controlStream.ReadResponse(StatusClosingDataConnection)
 
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
@@ -571,22 +615,27 @@ func (c *ServerConn) CurrentDir() (string, error) {
 // Retr issues a RETR FTP command to fetch the specified file from the remote
 // FTP server.
 //
-// The returned ReadCloser must be closed to cleanup the FTP data connection.
-func (c *ServerConn) Retr(path string) (io.ReadCloser, error) {
+// The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
+func (c *ServerConn) Retr(path string) (*response, error) {
 	return c.RetrFrom(path, 0)
 }
 
 // RetrFrom issues a RETR FTP command to fetch the specified file from the remote
 // FTP server, the server will not send the offset first bytes of the file.
 //
-// The returned ReadCloser must be closed to cleanup the FTP data connection.
-func (c *ServerConn) RetrFrom(path string, offset uint64) (io.ReadCloser, error) {
-	conn, err := c.cmdDataConnFrom(offset, "RETR %s", path)
+// The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
+func (c *ServerConn) RetrFrom(path string, offset uint64) (*response, error) {
+	conn, err := c.cmdDataReceiveStreamFrom(offset, "RETR %s", path)
 	if err != nil {
 		return nil, err
 	}
 
 	return &response{conn, c}, nil
+}
+
+func (c *ServerConn) FinializeRetr() error {
+	_, _, err := c.controlStream.ReadResponse(StatusClosingDataConnection)
+	return err
 }
 
 // Stor issues a STOR FTP command to store a file to the remote FTP server.
@@ -603,18 +652,18 @@ func (c *ServerConn) Stor(path string, r io.Reader) error {
 //
 // Hint: io.Pipe() can be used if an io.Writer is required.
 func (c *ServerConn) StorFrom(path string, r io.Reader, offset uint64) error {
-	conn, err := c.cmdDataConnFrom(offset, "STOR %s", path)
+	stream, err := c.cmdDataSendStreamFrom(offset, "STOR %s", path)
 	if err != nil {
 		return err
 	}
 
-	_, err = io.Copy(conn, r)
-	conn.Close()
+	_, err = io.Copy(stream, r)
+	stream.Close()
 	if err != nil {
 		return err
 	}
 
-	_, _, err = c.conn.ReadResponse(StatusClosingDataConnection)
+	_, _, err = c.controlStream.ReadResponse(StatusClosingDataConnection)
 	return err
 }
 
@@ -667,21 +716,11 @@ func (c *ServerConn) Logout() error {
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
 func (c *ServerConn) Quit() error {
-	c.conn.Cmd("QUIT")
-	return c.conn.Close()
+	c.controlStream.Cmd("QUIT")
+	return c.controlStream.Close()
 }
 
 // Read implements the io.Reader interface on a FTP data connection.
 func (r *response) Read(buf []byte) (int, error) {
 	return r.conn.Read(buf)
-}
-
-// Close implements the io.Closer interface on a FTP data connection.
-func (r *response) Close() error {
-	err := r.conn.Close()
-	_, _, err2 := r.c.conn.ReadResponse(StatusClosingDataConnection)
-	if err2 != nil {
-		err = err2
-	}
-	return err
 }

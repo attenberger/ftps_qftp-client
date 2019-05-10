@@ -1,4 +1,4 @@
-package ftp
+package client_ftp
 
 // FTP status codes, defined in RFC 959
 const (
@@ -25,6 +25,7 @@ const (
 	StatusLoggedIn              = 230
 	StatusLoggedOut             = 231
 	StatusLogoutAck             = 232
+	StatusAuthTLS               = 234
 	StatusRequestedFileActionOK = 250
 	StatusPathCreated           = 257
 
@@ -48,6 +49,7 @@ const (
 	StatusNotImplementedParameter = 504
 	StatusNotLoggedIn             = 530
 	StatusStorNeedAccount         = 532
+	StatusNeedTLS                 = 534
 	StatusFileUnavailable         = 550
 	StatusPageTypeUnknown         = 551
 	StatusExceededStorage         = 552
@@ -73,6 +75,7 @@ var statusText = map[int]string{
 	StatusLoggedIn:              "User logged in, proceed.",
 	StatusLoggedOut:             "User logged out; service terminated.",
 	StatusLogoutAck:             "Logout command noted, will complete when transfer done.",
+	StatusAuthTLS:               "Connection secured with TLS",
 	StatusRequestedFileActionOK: "Requested file action okay, completed.",
 	StatusPathCreated:           "Path created.",
 
@@ -86,7 +89,7 @@ var statusText = map[int]string{
 	StatusCanNotOpenDataConnection: "Can't open data connection.",
 	StatusTransfertAborted:         "Connection closed; transfer aborted.",
 	StatusInvalidCredentials:       "Invalid username or password.",
-	StatusHostUnavailable:          "Requested host unavailable.",
+	StatusHostUnavailable:          "Requested hostname unavailable.",
 	StatusFileActionIgnored:        "Requested file action not taken.",
 	StatusActionAborted:            "Requested action aborted. Local error in processing.",
 	Status452:                      "Insufficient storage space in system.",
@@ -99,6 +102,7 @@ var statusText = map[int]string{
 	StatusNotImplementedParameter: "Command not implemented for that parameter.",
 	StatusNotLoggedIn:             "Not logged in.",
 	StatusStorNeedAccount:         "Need account for storing files.",
+	StatusNeedTLS:                 "AUTH TLS requrired.",
 	StatusFileUnavailable:         "File unavailable.",
 	StatusPageTypeUnknown:         "Page type unknown.",
 	StatusExceededStorage:         "Exceeded storage allocation.",
