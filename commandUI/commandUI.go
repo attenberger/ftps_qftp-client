@@ -268,7 +268,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 	}
 
 	functions["QUIT"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
-		if len(parameters) == 0 {
+		if len(parameters) != 0 {
 			return errors.New("QUIT accepts no parameter.")
 		}
 		return connection.Quit()
