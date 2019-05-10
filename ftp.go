@@ -714,20 +714,33 @@ func (c *ServerConn) MultipleTransfer(tasks []TransferTask, nrParallel int) erro
 		nrParallel = len(tasks)
 	}
 
-	// Start goroutines for parallel connections and provide the channels for communication
-	taskChannel := make(chan TransferTask, len(tasks))
-	returnChannel := make(chan error, len(tasks))
-	for i := 0; i < nrParallel; i++ {
-		go c.parallelTransfer(c.hostname+":"+c.hostcontrolport, currentdirctory, c.tlsSecuredControlConnection, c.certfilename, taskChannel, returnChannel)
-	}
-
 	// Write all tasks to the channel including the finishing message
+	taskChannel := make(chan TransferTask, len(tasks)+nrParallel)
+	returnChannel := make(chan error, len(tasks))
 	for _, task := range tasks {
 		task.finished = false
 		taskChannel <- task
 	}
 	for i := 0; i < nrParallel; i++ {
 		taskChannel <- TransferTask{finished: true}
+	}
+
+	// Start goroutines for parallel connections and provide the channels for communication
+	for i := 0; i < nrParallel-1; i++ {
+		go c.parallelTransfer(c.hostname+":"+c.hostcontrolport, currentdirctory, c.tlsSecuredControlConnection, c.certfilename, taskChannel, returnChannel)
+	}
+	// The main connection is also used for parallel transfer
+	for {
+		task := <-taskChannel
+		if task.finished {
+			break
+		} else if task.direction == Store {
+			returnChannel <- c.parallelStorTask(task)
+		} else if task.direction == Retrieve {
+			returnChannel <- c.parallelRetrTask(task)
+		} else {
+			returnChannel <- errors.New("Unknown direction for transfer.")
+		}
 	}
 
 	errorMessage := ""
