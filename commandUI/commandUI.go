@@ -201,7 +201,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return connection.MakeDir(parameters[0])
 	}
 
-	/*functions["MTRAN"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["MTRAN"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
 		if len(parameters) < 4 || len(parameters)%3 != 1 {
 			return errors.New("MTRAN needs at least four parameters. The first has to be the number of parallel connection, " +
 				"the rest each a triple of transferdirection, local- and remotepath. Transferdirection is indicated by \"<\" " +
@@ -229,7 +229,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 			return err
 		}
 		return nil
-	}*/
+	}
 
 	functions["NLST"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
 		var entrys []string
@@ -307,13 +307,13 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		_, err = io.Copy(file, reader)
 		if err != nil {
 			errortext := "Error while writing file to local file. " + err.Error()
-			err = connection.FinializeRetr()
+			err = reader.Close()
 			if err != nil {
 				errortext = errortext + " Error while closing reader from server. " + err.Error()
 			}
 			return errors.New(errortext)
 		}
-		err = connection.FinializeRetr()
+		err = reader.Close()
 		if err != nil {
 			return errors.New(" Error while closing reader from server. " + err.Error())
 		}

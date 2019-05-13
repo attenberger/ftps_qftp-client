@@ -2,16 +2,13 @@
 package client_ftp
 
 import (
-	"bufio"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"fmt"
 	"github.com/attenberger/quic-go"
 	"io"
 	"io/ioutil"
 	"net/textproto"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,37 +19,14 @@ const (
 	MaxStreamFlowControl = 6291456 // like OpenSuse TCP /proc/sys/net/ipv4/tcp_rmem
 )
 
-// EntryType describes the different types of an Entry.
-type EntryType int
-
-// The differents types of an Entry
-const (
-	EntryTypeFile EntryType = iota
-	EntryTypeFolder
-	EntryTypeLink
-)
-
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	controlStream      *textproto.Conn
+	mainSubConn        *serverSubConn
 	dataRetriveStreams map[quic.StreamID]quic.ReceiveStream
 	quicSession        quic.Session
-	streamOpenMutex    sync.Mutex
-	features           map[string]string
-}
-
-// Entry describes a file and is returned by List().
-type Entry struct {
-	Name string
-	Type EntryType
-	Size uint64
-	Time time.Time
-}
-
-// response represent a data-connection
-type response struct {
-	conn quic.ReceiveStream
-	c    *ServerConn
+	structAccessMutex  sync.Mutex
+	username           string
+	password           string
 }
 
 // Connect is an alias to Dial, for backward compatibility
@@ -83,32 +57,32 @@ func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerCo
 		return nil, err
 	}
 
-	controlStreamRaw, err := quicSession.AcceptStream()
+	c := &ServerConn{
+		dataRetriveStreams: make(map[quic.StreamID]quic.ReceiveStream),
+		quicSession:        quicSession,
+		structAccessMutex:  sync.Mutex{},
+	}
+
+	controlStreamRaw, err := quicSession.OpenStreamSync()
 	if err != nil {
 		return nil, err
 	}
 
 	controlStream := textproto.NewConn(controlStreamRaw)
 
-	c := &ServerConn{
-		controlStream:      controlStream,
-		dataRetriveStreams: make(map[quic.StreamID]quic.ReceiveStream),
-		quicSession:        quicSession,
-		streamOpenMutex:    sync.Mutex{},
-		features:           make(map[string]string),
+	subC := &serverSubConn{
+		serverConnection: c,
+		controlStream:    controlStream,
+		features:         make(map[string]string),
 	}
 
-	_, _, err = c.controlStream.ReadResponse(StatusReady)
+	err = subC.Feat()
 	if err != nil {
-		c.Quit()
+		subC.Quit()
 		return nil, err
 	}
 
-	err = c.Feat()
-	if err != nil {
-		c.Quit()
-		return nil, err
-	}
+	c.mainSubConn = subC
 
 	return c, nil
 }
@@ -148,494 +122,64 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 // "anonymous"/"anonymous" is a common user/password scheme for FTP servers
 // that allows anonymous read-only accounts.
 func (c *ServerConn) Login(user, password string) error {
-	code, message, err := c.cmd(-1, "USER %s", user)
+	err := c.mainSubConn.Login(user, password)
 	if err != nil {
 		return err
 	}
-
-	switch code {
-	case StatusLoggedIn:
-	case StatusUserOK:
-		_, _, err = c.cmd(StatusLoggedIn, "PASS %s", password)
-		if err != nil {
-			return err
-		}
-	default:
-		return errors.New(message)
-	}
-
-	// Switch to binary mode
-	_, _, err = c.cmd(StatusCommandOK, "TYPE I")
-	if err != nil {
-		return err
-	}
-
-	// logged, check features again
-	if err = c.Feat(); err != nil {
-		c.Quit()
-		return err
-	}
-
-	return nil
-}
-
-// feat issues a FEAT FTP command to list the additional commands supported by
-// the remote FTP server.
-// FEAT is described in RFC 2389
-func (c *ServerConn) Feat() error {
-	code, message, err := c.cmd(-1, "FEAT")
-	if err != nil {
-		return err
-	}
-
-	if code != StatusSystem {
-		// The server does not support the FEAT command. This is not an
-		// error: we consider that there is no additional feature.
-		return nil
-	}
-
-	lines := strings.Split(message, "\n")
-	for _, line := range lines {
-		if !strings.HasPrefix(line, " ") {
-			continue
-		}
-
-		line = strings.TrimSpace(line)
-		featureElements := strings.SplitN(line, " ", 2)
-
-		command := featureElements[0]
-
-		var commandDesc string
-		if len(featureElements) == 2 {
-			commandDesc = featureElements[1]
-		}
-
-		c.features[command] = commandDesc
-	}
+	c.username = user
+	c.password = password
 
 	return nil
 }
 
 // Features return allowed features from feat command response
 func (c *ServerConn) Features() map[string]string {
-	return c.features
-}
-
-// openDataRetriveStream creates a new FTP data stream to retrieve.
-func (c *ServerConn) getDataRetriveStream(streamID quic.StreamID) (quic.ReceiveStream, error) {
-	c.streamOpenMutex.Lock()
-	defer c.streamOpenMutex.Unlock()
-
-	for {
-		stream, available := c.dataRetriveStreams[streamID]
-		if available {
-			return stream, nil
-		}
-		stream, err := c.quicSession.AcceptUniStream()
-		if err != nil {
-			return nil, err
-		}
-		if stream.StreamID() > streamID {
-			return nil, errors.New("Could not get wanted stream.")
-		}
-		c.dataRetriveStreams[stream.StreamID()] = stream
-	}
-}
-
-// openNewDataSendStream creates a new FTP data stream to send.
-func (c *ServerConn) getNewDataSendStream() (quic.SendStream, error) {
-	c.streamOpenMutex.Lock()
-	defer c.streamOpenMutex.Unlock()
-	return c.quicSession.OpenUniStreamSync()
-}
-
-// Exec runs a command and check for expected code
-func (c *ServerConn) Exec(expected int, format string, args ...interface{}) (int, string, error) {
-	return c.cmd(expected, format, args...)
-}
-
-// cmd is a helper function to execute a command and check for the expected FTP
-// return code
-func (c *ServerConn) cmd(expected int, format string, args ...interface{}) (int, string, error) {
-	_, err := c.controlStream.Cmd(format, args...)
-	if err != nil {
-		return 0, "", err
-	}
-
-	return c.controlStream.ReadResponse(expected)
-}
-
-// cmdDataReceiveStreamFrom executes a command which require a FTP data stream to receive data.
-// Issues a REST FTP command to specify the number of bytes to skip for the transfer.
-func (c *ServerConn) cmdDataReceiveStreamFrom(offset uint64, format string, args ...interface{}) (quic.ReceiveStream, error) {
-	if offset != 0 {
-		_, _, err := c.cmd(StatusRequestFilePending, "REST %d", offset)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	_, err := c.controlStream.Cmd(format, args...)
-	if err != nil {
-		return nil, err
-	}
-
-	code, msg, err := c.controlStream.ReadResponse(-1)
-	if err != nil {
-		return nil, err
-	}
-	if code != StatusAlreadyOpen && code != StatusAboutToSend {
-		return nil, &textproto.Error{Code: code, Msg: msg}
-	}
-	msgParts := strings.SplitN(msg, " ", 2)
-	if len(msgParts) != 2 {
-		return nil, errors.New("Returnmessage must contain the stream id separated by a blank.")
-	}
-	streamIDUint64, err := strconv.ParseInt(msgParts[0], 10, 64)
-	if err != nil || streamIDUint64 < 0 || streamIDUint64%4 != 3 {
-		return nil, errors.New("Stream ID has not a valid value for a unidirectional stream from the server.")
-	}
-	streamID := quic.StreamID(streamIDUint64)
-
-	stream, err := c.getDataRetriveStream(streamID)
-	if err != nil {
-		return nil, err
-	}
-
-	return stream, nil
-}
-
-// cmdDataSendStreamFrom executes a command which require a FTP data stream to receive data.
-// Issues a REST FTP command to specify the number of bytes to skip for the transfer.
-func (c *ServerConn) cmdDataSendStreamFrom(offset uint64, format string, args ...interface{}) (quic.SendStream, error) {
-	stream, err := c.getNewDataSendStream()
-	if err != nil {
-		return nil, err
-	}
-
-	if offset != 0 {
-		_, _, err := c.cmd(StatusRequestFilePending, "REST %d", offset)
-		if err != nil {
-			stream.Close()
-			return nil, err
-		}
-	}
-
-	formatParts := strings.SplitN(format, " ", 2)
-	if len(formatParts) < 2 {
-		format = formatParts[0] + fmt.Sprintf(" %d", stream.StreamID())
-	} else {
-		format = formatParts[0] + fmt.Sprintf(" %d ", stream.StreamID()) + formatParts[1]
-	}
-	_, err = c.controlStream.Cmd(format, args...)
-	if err != nil {
-		stream.Close()
-		return nil, err
-	}
-
-	code, msg, err := c.controlStream.ReadResponse(-1)
-	if err != nil {
-		stream.Close()
-		return nil, err
-	}
-	if code != StatusAlreadyOpen && code != StatusAboutToSend {
-		stream.Close()
-		return nil, &textproto.Error{Code: code, Msg: msg}
-	}
-
-	return stream, nil
-}
-
-var errUnsupportedListLine = errors.New("Unsupported LIST line")
-
-// parseRFC3659ListLine parses the style of directory line defined in RFC 3659.
-func parseRFC3659ListLine(line string) (*Entry, error) {
-	iSemicolon := strings.Index(line, ";")
-	iWhitespace := strings.Index(line, " ")
-
-	if iSemicolon < 0 || iSemicolon > iWhitespace {
-		return nil, errUnsupportedListLine
-	}
-
-	e := &Entry{
-		Name: line[iWhitespace+1:],
-	}
-
-	for _, field := range strings.Split(line[:iWhitespace-1], ";") {
-		i := strings.Index(field, "=")
-		if i < 1 {
-			return nil, errUnsupportedListLine
-		}
-
-		key := field[:i]
-		value := field[i+1:]
-
-		switch key {
-		case "modify":
-			var err error
-			e.Time, err = time.Parse("20060102150405", value)
-			if err != nil {
-				return nil, err
-			}
-		case "type":
-			switch value {
-			case "dir", "cdir", "pdir":
-				e.Type = EntryTypeFolder
-			case "file":
-				e.Type = EntryTypeFile
-			}
-		case "size":
-			e.setSize(value)
-		}
-	}
-	return e, nil
-}
-
-// parseLsListLine parses a directory line in a format based on the output of
-// the UNIX ls command.
-func parseLsListLine(line string) (*Entry, error) {
-	fields := strings.Fields(line)
-	if len(fields) >= 7 && fields[1] == "folder" && fields[2] == "0" {
-		e := &Entry{
-			Type: EntryTypeFolder,
-			Name: strings.Join(fields[6:], " "),
-		}
-		if err := e.setTime(fields[3:6]); err != nil {
-			return nil, err
-		}
-
-		return e, nil
-	}
-
-	if fields[1] == "0" {
-		e := &Entry{
-			Type: EntryTypeFile,
-			Name: strings.Join(fields[7:], " "),
-		}
-
-		if err := e.setSize(fields[2]); err != nil {
-			return nil, err
-		}
-		if err := e.setTime(fields[4:7]); err != nil {
-			return nil, err
-		}
-
-		return e, nil
-	}
-
-	if len(fields) < 9 {
-		return nil, errUnsupportedListLine
-	}
-
-	e := &Entry{}
-	switch fields[0][0] {
-	case '-':
-		e.Type = EntryTypeFile
-		if err := e.setSize(fields[4]); err != nil {
-			return nil, err
-		}
-	case 'd':
-		e.Type = EntryTypeFolder
-	case 'l':
-		e.Type = EntryTypeLink
-	default:
-		return nil, errors.New("Unknown entry type")
-	}
-
-	if err := e.setTime(fields[5:8]); err != nil {
-		return nil, err
-	}
-
-	e.Name = strings.Join(fields[8:], " ")
-	return e, nil
-}
-
-var dirTimeFormats = []string{
-	"01-02-06  03:04PM",
-	"2006-01-02  15:04",
-}
-
-// parseDirListLine parses a directory line in a format based on the output of
-// the MS-DOS DIR command.
-func parseDirListLine(line string) (*Entry, error) {
-	e := &Entry{}
-	var err error
-
-	// Try various time formats that DIR might use, and stop when one works.
-	for _, format := range dirTimeFormats {
-		e.Time, err = time.Parse(format, line[:len(format)])
-		if err == nil {
-			line = line[len(format):]
-			break
-		}
-	}
-	if err != nil {
-		// None of the time formats worked.
-		return nil, errUnsupportedListLine
-	}
-
-	line = strings.TrimLeft(line, " ")
-	if strings.HasPrefix(line, "<DIR>") {
-		e.Type = EntryTypeFolder
-		line = strings.TrimPrefix(line, "<DIR>")
-	} else {
-		space := strings.Index(line, " ")
-		if space == -1 {
-			return nil, errUnsupportedListLine
-		}
-		e.Size, err = strconv.ParseUint(line[:space], 10, 64)
-		if err != nil {
-			return nil, errUnsupportedListLine
-		}
-		e.Type = EntryTypeFile
-		line = line[space:]
-	}
-
-	e.Name = strings.TrimLeft(line, " ")
-	return e, nil
-}
-
-var listLineParsers = []func(line string) (*Entry, error){
-	parseRFC3659ListLine,
-	parseLsListLine,
-	parseDirListLine,
-}
-
-// parseListLine parses the various non-standard format returned by the LIST
-// FTP command.
-func parseListLine(line string) (*Entry, error) {
-	for _, f := range listLineParsers {
-		e, err := f(line)
-		if err == errUnsupportedListLine {
-			// Try another format.
-			continue
-		}
-		return e, err
-	}
-	return nil, errUnsupportedListLine
-}
-
-func (e *Entry) setSize(str string) (err error) {
-	e.Size, err = strconv.ParseUint(str, 0, 64)
-	return
-}
-
-func (e *Entry) setTime(fields []string) (err error) {
-	var timeStr string
-	if strings.Contains(fields[2], ":") { // this year
-		thisYear, _, _ := time.Now().Date()
-		timeStr = fields[1] + " " + fields[0] + " " + strconv.Itoa(thisYear)[2:4] + " " + fields[2] + " GMT"
-	} else { // not this year
-		if len(fields[2]) != 4 {
-			return errors.New("Invalid year format in time string")
-		}
-		timeStr = fields[1] + " " + fields[0] + " " + fields[2][2:4] + " 00:00 GMT"
-	}
-	e.Time, err = time.Parse("_2 Jan 06 15:04 MST", timeStr)
-	return
+	return c.mainSubConn.features
 }
 
 // NameList issues an NLST FTP command.
 func (c *ServerConn) NameList(path string) (entries []string, err error) {
-	conn, err := c.cmdDataReceiveStreamFrom(0, "NLST %s", path)
-	if err != nil {
-		return
-	}
-
-	r := &response{conn, c}
-	defer c.controlStream.ReadResponse(StatusClosingDataConnection)
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		entries = append(entries, scanner.Text())
-	}
-	if err = scanner.Err(); err != nil {
-		return entries, err
-	}
-	return
+	return c.mainSubConn.NameList(path)
 }
 
 // List issues a LIST FTP command.
 func (c *ServerConn) List(path string) (entries []*Entry, err error) {
-	conn, err := c.cmdDataReceiveStreamFrom(0, "LIST %s", path)
-	if err != nil {
-		return
-	}
-
-	r := &response{conn, c}
-	defer c.controlStream.ReadResponse(StatusClosingDataConnection)
-
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
-		entry, err := parseListLine(line)
-		if err == nil {
-			entries = append(entries, entry)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return
+	return c.mainSubConn.List(path)
 }
 
 // ChangeDir issues a CWD FTP command, which changes the current directory to
 // the specified path.
 func (c *ServerConn) ChangeDir(path string) error {
-	_, _, err := c.cmd(StatusRequestedFileActionOK, "CWD %s", path)
-	return err
+	return c.mainSubConn.ChangeDir(path)
 }
 
 // ChangeDirToParent issues a CDUP FTP command, which changes the current
 // directory to the parent directory.  This is similar to a call to ChangeDir
 // with a path set to "..".
 func (c *ServerConn) ChangeDirToParent() error {
-	_, _, err := c.cmd(StatusRequestedFileActionOK, "CDUP")
-	return err
+	return c.mainSubConn.ChangeDirToParent()
 }
 
 // CurrentDir issues a PWD FTP command, which Returns the path of the current
 // directory.
 func (c *ServerConn) CurrentDir() (string, error) {
-	_, msg, err := c.cmd(StatusPathCreated, "PWD")
-	if err != nil {
-		return "", err
-	}
-
-	start := strings.Index(msg, "\"")
-	end := strings.LastIndex(msg, "\"")
-
-	if start == -1 || end == -1 {
-		return "", errors.New("Unsuported PWD response format")
-	}
-
-	return msg[start+1 : end], nil
+	return c.mainSubConn.CurrentDir()
 }
 
 // Retr issues a RETR FTP command to fetch the specified file from the remote
 // FTP server.
 //
 // The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
-func (c *ServerConn) Retr(path string) (*response, error) {
-	return c.RetrFrom(path, 0)
+func (c *ServerConn) Retr(path string) (io.ReadCloser, error) {
+	return c.mainSubConn.Retr(path)
 }
 
 // RetrFrom issues a RETR FTP command to fetch the specified file from the remote
 // FTP server, the server will not send the offset first bytes of the file.
 //
 // The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
-func (c *ServerConn) RetrFrom(path string, offset uint64) (*response, error) {
-	conn, err := c.cmdDataReceiveStreamFrom(offset, "RETR %s", path)
-	if err != nil {
-		return nil, err
-	}
-
-	return &response{conn, c}, nil
-}
-
-func (c *ServerConn) FinializeRetr() error {
-	_, _, err := c.controlStream.ReadResponse(StatusClosingDataConnection)
-	return err
+func (c *ServerConn) RetrFrom(path string, offset uint64) (io.ReadCloser, error) {
+	return c.mainSubConn.RetrFrom(path, offset)
 }
 
 // Stor issues a STOR FTP command to store a file to the remote FTP server.
@@ -643,7 +187,7 @@ func (c *ServerConn) FinializeRetr() error {
 //
 // Hint: io.Pipe() can be used if an io.Writer is required.
 func (c *ServerConn) Stor(path string, r io.Reader) error {
-	return c.StorFrom(path, r, 0)
+	return c.mainSubConn.Stor(path, r)
 }
 
 // StorFrom issues a STOR FTP command to store a file to the remote FTP server.
@@ -652,75 +196,110 @@ func (c *ServerConn) Stor(path string, r io.Reader) error {
 //
 // Hint: io.Pipe() can be used if an io.Writer is required.
 func (c *ServerConn) StorFrom(path string, r io.Reader, offset uint64) error {
-	stream, err := c.cmdDataSendStreamFrom(offset, "STOR %s", path)
+	return c.mainSubConn.StorFrom(path, r, offset)
+}
+
+// MultipleTransfer issues STOR FTP commands in parallel connections to store multiple files
+// to the remote FTP server.
+// Stor creates the specified files as specified in tasks. The number of parallel
+// connections can be limited. nrParallel < 0 means no limit
+//
+// Hint: io.Pipe() can be used if an io.Writer is required.
+func (c *ServerConn) MultipleTransfer(tasks []TransferTask, nrParallel int) error {
+	currentdirctory, err := c.CurrentDir()
 	if err != nil {
 		return err
 	}
 
-	_, err = io.Copy(stream, r)
-	stream.Close()
-	if err != nil {
-		return err
+	// Not more connections than files to store or negative
+	if len(tasks) < nrParallel || nrParallel < 0 {
+		nrParallel = len(tasks)
 	}
 
-	_, _, err = c.controlStream.ReadResponse(StatusClosingDataConnection)
-	return err
+	// Write all tasks to the channel including the finishing message
+	taskChannel := make(chan TransferTask, len(tasks)+nrParallel)
+	returnChannel := make(chan error, len(tasks))
+	for _, task := range tasks {
+		task.finished = false
+		taskChannel <- task
+	}
+	for i := 0; i < nrParallel; i++ {
+		taskChannel <- TransferTask{finished: true}
+	}
+
+	// Start goroutines for parallel connections and provide the channels for communication
+	for i := 0; i < nrParallel-1; i++ {
+		go c.parallelTransfer(c.quicSession, currentdirctory, taskChannel, returnChannel)
+	}
+	// The main connection is also used for parallel transfer
+	for {
+		task := <-taskChannel
+		if task.finished {
+			break
+		} else if task.direction == Store {
+			returnChannel <- c.mainSubConn.parallelStorTask(task)
+		} else if task.direction == Retrieve {
+			returnChannel <- c.mainSubConn.parallelRetrTask(task)
+		} else {
+			returnChannel <- errors.New("Unknown direction for transfer.")
+		}
+	}
+
+	errorMessage := ""
+	// Wait for replais of the STORs in the goroutines
+	for normalReplay, goRoutineResetReply := 0, 0; normalReplay < len(tasks) && goRoutineResetReply < nrParallel; normalReplay++ {
+		replay := <-returnChannel
+		if replay != nil {
+			errorMessage = errorMessage + "\n" + replay.Error()
+			if strings.HasPrefix("Go routine reset.", replay.Error()) {
+				goRoutineResetReply++
+			}
+		}
+	}
+	if errorMessage == "" {
+		return nil
+	} else {
+		return errors.New(errorMessage)
+	}
 }
 
 // Rename renames a file on the remote FTP server.
 func (c *ServerConn) Rename(from, to string) error {
-	_, _, err := c.cmd(StatusRequestFilePending, "RNFR %s", from)
-	if err != nil {
-		return err
-	}
-
-	_, _, err = c.cmd(StatusRequestedFileActionOK, "RNTO %s", to)
-	return err
+	return c.mainSubConn.Rename(from, to)
 }
 
 // Delete issues a DELE FTP command to delete the specified file from the
 // remote FTP server.
 func (c *ServerConn) Delete(path string) error {
-	_, _, err := c.cmd(StatusRequestedFileActionOK, "DELE %s", path)
-	return err
+	return c.mainSubConn.Delete(path)
 }
 
 // MakeDir issues a MKD FTP command to create the specified directory on the
 // remote FTP server.
 func (c *ServerConn) MakeDir(path string) error {
-	_, _, err := c.cmd(StatusPathCreated, "MKD %s", path)
-	return err
+	return c.mainSubConn.MakeDir(path)
 }
 
 // RemoveDir issues a RMD FTP command to remove the specified directory from
 // the remote FTP server.
 func (c *ServerConn) RemoveDir(path string) error {
-	_, _, err := c.cmd(StatusRequestedFileActionOK, "RMD %s", path)
-	return err
+	return c.mainSubConn.RemoveDir(path)
 }
 
 // NoOp issues a NOOP FTP command.
 // NOOP has no effects and is usually used to prevent the remote FTP server to
 // close the otherwise idle connection.
 func (c *ServerConn) NoOp() error {
-	_, _, err := c.cmd(StatusCommandOK, "NOOP")
-	return err
+	return c.mainSubConn.NoOp()
 }
 
 // Logout issues a REIN FTP command to logout the current user.
 func (c *ServerConn) Logout() error {
-	_, _, err := c.cmd(StatusReady, "REIN")
-	return err
+	return c.mainSubConn.Logout()
 }
 
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
 func (c *ServerConn) Quit() error {
-	c.controlStream.Cmd("QUIT")
-	return c.controlStream.Close()
-}
-
-// Read implements the io.Reader interface on a FTP data connection.
-func (r *response) Read(buf []byte) (int, error) {
-	return r.conn.Read(buf)
+	return c.mainSubConn.Quit()
 }

@@ -80,7 +80,7 @@ func TestConn(t *testing.T) {
 		if string(buf) != testData {
 			t.Errorf("'%s'", buf)
 		}
-		c.FinializeRetr()
+		r.Close()
 	}
 
 	r, err = c.RetrFrom("tset", 5)
@@ -95,7 +95,7 @@ func TestConn(t *testing.T) {
 		if string(buf) != expected {
 			t.Errorf("read %q, expected %q", buf, expected)
 		}
-		c.FinializeRetr()
+		r.Close()
 	}
 
 	err = c.Delete("tset")
