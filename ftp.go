@@ -117,6 +117,11 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 	return config
 }
 
+// Just implemented to have the same interface as for ftps
+func (c *ServerConn) AuthTLS() error {
+	return nil
+}
+
 // Login authenticates the client with specified user and password.
 //
 // "anonymous"/"anonymous" is a common user/password scheme for FTP servers
