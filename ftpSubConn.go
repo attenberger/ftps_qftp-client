@@ -24,7 +24,7 @@ const (
 
 // ServerConn represents a subconnection to a remote FTP server
 // with one QUIC-controlstream and optional one QUIC-datastream
-type serverSubConn struct {
+type ServerSubConn struct {
 	serverConnection *ServerConn
 	controlStream    *textproto.Conn
 	features         map[string]string
@@ -41,14 +41,14 @@ type Entry struct {
 // response represent a data-connection
 type response struct {
 	conn quic.ReceiveStream
-	c    *serverSubConn
+	c    *ServerSubConn
 }
 
 // Login authenticates the client with specified user and password.
 //
 // "anonymous"/"anonymous" is a common user/password scheme for FTP servers
 // that allows anonymous read-only accounts.
-func (subC *serverSubConn) Login(user, password string) error {
+func (subC *ServerSubConn) Login(user, password string) error {
 	code, message, err := subC.cmd(-1, "USER %s", user)
 	if err != nil {
 		return err
@@ -83,7 +83,7 @@ func (subC *serverSubConn) Login(user, password string) error {
 // feat issues a FEAT FTP command to list the additional commands supported by
 // the remote FTP server.
 // FEAT is described in RFC 2389
-func (subC *serverSubConn) Feat() error {
+func (subC *ServerSubConn) Feat() error {
 	code, message, err := subC.cmd(-1, "FEAT")
 	if err != nil {
 		return err
@@ -117,21 +117,26 @@ func (subC *serverSubConn) Feat() error {
 	return nil
 }
 
+// Features return allowed features from feat command response
+func (subC *ServerSubConn) Features() map[string]string {
+	return subC.features
+}
+
 // openNewDataSendStream creates a new FTP data stream to send.
-func (subC *serverSubConn) getNewDataSendStream() (quic.SendStream, error) {
+func (subC *ServerSubConn) getNewDataSendStream() (quic.SendStream, error) {
 	subC.serverConnection.structAccessMutex.Lock()
 	defer subC.serverConnection.structAccessMutex.Unlock()
 	return subC.serverConnection.quicSession.OpenUniStreamSync()
 }
 
 // Exec runs a command and check for expected code
-func (subC *serverSubConn) Exec(expected int, format string, args ...interface{}) (int, string, error) {
+func (subC *ServerSubConn) Exec(expected int, format string, args ...interface{}) (int, string, error) {
 	return subC.cmd(expected, format, args...)
 }
 
 // cmdDataReceiveStreamFrom executes a command which require a FTP data stream to receive data.
 // Issues a REST FTP command to specify the number of bytes to skip for the transfer.
-func (subC *serverSubConn) cmdDataReceiveStreamFrom(offset uint64, format string, args ...interface{}) (quic.ReceiveStream, error) {
+func (subC *ServerSubConn) cmdDataReceiveStreamFrom(offset uint64, format string, args ...interface{}) (quic.ReceiveStream, error) {
 	if offset != 0 {
 		_, _, err := subC.cmd(StatusRequestFilePending, "REST %d", offset)
 		if err != nil {
@@ -171,7 +176,7 @@ func (subC *serverSubConn) cmdDataReceiveStreamFrom(offset uint64, format string
 
 // cmdDataSendStreamFrom executes a command which require a FTP data stream to receive data.
 // Issues a REST FTP command to specify the number of bytes to skip for the transfer.
-func (subC *serverSubConn) cmdDataSendStreamFrom(offset uint64, format string, args ...interface{}) (quic.SendStream, error) {
+func (subC *ServerSubConn) cmdDataSendStreamFrom(offset uint64, format string, args ...interface{}) (quic.SendStream, error) {
 	stream, err := subC.getNewDataSendStream()
 	if err != nil {
 		return nil, err
@@ -211,7 +216,7 @@ func (subC *serverSubConn) cmdDataSendStreamFrom(offset uint64, format string, a
 }
 
 // openDataRetriveStream creates a new FTP data stream to retrieve.
-func (subC *serverSubConn) getDataRetriveStream(streamID quic.StreamID) (quic.ReceiveStream, error) {
+func (subC *ServerSubConn) getDataRetriveStream(streamID quic.StreamID) (quic.ReceiveStream, error) {
 	subC.serverConnection.structAccessMutex.Lock()
 	defer subC.serverConnection.structAccessMutex.Unlock()
 
@@ -422,7 +427,7 @@ func (e *Entry) setTime(fields []string) (err error) {
 }
 
 // NameList issues an NLST FTP command.
-func (subC *serverSubConn) NameList(path string) (entries []string, err error) {
+func (subC *ServerSubConn) NameList(path string) (entries []string, err error) {
 	conn, err := subC.cmdDataReceiveStreamFrom(0, "NLST %s", path)
 	if err != nil {
 		return
@@ -442,7 +447,7 @@ func (subC *serverSubConn) NameList(path string) (entries []string, err error) {
 }
 
 // List issues a LIST FTP command.
-func (subC *serverSubConn) List(path string) (entries []*Entry, err error) {
+func (subC *ServerSubConn) List(path string) (entries []*Entry, err error) {
 	conn, err := subC.cmdDataReceiveStreamFrom(0, "LIST %s", path)
 	if err != nil {
 		return
@@ -467,7 +472,7 @@ func (subC *serverSubConn) List(path string) (entries []*Entry, err error) {
 
 // ChangeDir issues a CWD FTP command, which changes the current directory to
 // the specified path.
-func (subC *serverSubConn) ChangeDir(path string) error {
+func (subC *ServerSubConn) ChangeDir(path string) error {
 	_, _, err := subC.cmd(StatusRequestedFileActionOK, "CWD %s", path)
 	return err
 }
@@ -475,14 +480,14 @@ func (subC *serverSubConn) ChangeDir(path string) error {
 // ChangeDirToParent issues a CDUP FTP command, which changes the current
 // directory to the parent directory.  This is similar to a call to ChangeDir
 // with a path set to "..".
-func (subC *serverSubConn) ChangeDirToParent() error {
+func (subC *ServerSubConn) ChangeDirToParent() error {
 	_, _, err := subC.cmd(StatusRequestedFileActionOK, "CDUP")
 	return err
 }
 
 // CurrentDir issues a PWD FTP command, which Returns the path of the current
 // directory.
-func (subC *serverSubConn) CurrentDir() (string, error) {
+func (subC *ServerSubConn) CurrentDir() (string, error) {
 	_, msg, err := subC.cmd(StatusPathCreated, "PWD")
 	if err != nil {
 		return "", err
@@ -502,7 +507,7 @@ func (subC *serverSubConn) CurrentDir() (string, error) {
 // FTP server.
 //
 // The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
-func (subC *serverSubConn) Retr(path string) (io.ReadCloser, error) {
+func (subC *ServerSubConn) Retr(path string) (io.ReadCloser, error) {
 	return subC.RetrFrom(path, 0)
 }
 
@@ -510,7 +515,7 @@ func (subC *serverSubConn) Retr(path string) (io.ReadCloser, error) {
 // FTP server, the server will not send the offset first bytes of the file.
 //
 // The retrive must be finialized with FinializeRetr() to cleanup the FTP data connection.
-func (subC *serverSubConn) RetrFrom(path string, offset uint64) (io.ReadCloser, error) {
+func (subC *ServerSubConn) RetrFrom(path string, offset uint64) (io.ReadCloser, error) {
 	conn, err := subC.cmdDataReceiveStreamFrom(offset, "RETR %s", path)
 	if err != nil {
 		return nil, err
@@ -523,7 +528,7 @@ func (subC *serverSubConn) RetrFrom(path string, offset uint64) (io.ReadCloser, 
 // Stor creates the specified file with the content of the io.Reader.
 //
 // Hint: io.Pipe() can be used if an io.Writer is required.
-func (subC *serverSubConn) Stor(path string, r io.Reader) error {
+func (subC *ServerSubConn) Stor(path string, r io.Reader) error {
 	return subC.StorFrom(path, r, 0)
 }
 
@@ -532,7 +537,7 @@ func (subC *serverSubConn) Stor(path string, r io.Reader) error {
 // on the server will start at the given file offset.
 //
 // Hint: io.Pipe() can be used if an io.Writer is required.
-func (subC *serverSubConn) StorFrom(path string, r io.Reader, offset uint64) error {
+func (subC *ServerSubConn) StorFrom(path string, r io.Reader, offset uint64) error {
 	stream, err := subC.cmdDataSendStreamFrom(offset, "STOR %s", path)
 	if err != nil {
 		return err
@@ -549,7 +554,7 @@ func (subC *serverSubConn) StorFrom(path string, r io.Reader, offset uint64) err
 }
 
 // Rename renames a file on the remote FTP server.
-func (subC *serverSubConn) Rename(from, to string) error {
+func (subC *ServerSubConn) Rename(from, to string) error {
 	_, _, err := subC.cmd(StatusRequestFilePending, "RNFR %s", from)
 	if err != nil {
 		return err
@@ -561,21 +566,21 @@ func (subC *serverSubConn) Rename(from, to string) error {
 
 // Delete issues a DELE FTP command to delete the specified file from the
 // remote FTP server.
-func (subC *serverSubConn) Delete(path string) error {
+func (subC *ServerSubConn) Delete(path string) error {
 	_, _, err := subC.cmd(StatusRequestedFileActionOK, "DELE %s", path)
 	return err
 }
 
 // MakeDir issues a MKD FTP command to create the specified directory on the
 // remote FTP server.
-func (subC *serverSubConn) MakeDir(path string) error {
+func (subC *ServerSubConn) MakeDir(path string) error {
 	_, _, err := subC.cmd(StatusPathCreated, "MKD %s", path)
 	return err
 }
 
 // RemoveDir issues a RMD FTP command to remove the specified directory from
 // the remote FTP server.
-func (subC *serverSubConn) RemoveDir(path string) error {
+func (subC *ServerSubConn) RemoveDir(path string) error {
 	_, _, err := subC.cmd(StatusRequestedFileActionOK, "RMD %s", path)
 	return err
 }
@@ -583,14 +588,14 @@ func (subC *serverSubConn) RemoveDir(path string) error {
 // NoOp issues a NOOP FTP command.
 // NOOP has no effects and is usually used to prevent the remote FTP server to
 // close the otherwise idle connection.
-func (subC *serverSubConn) NoOp() error {
+func (subC *ServerSubConn) NoOp() error {
 	_, _, err := subC.cmd(StatusCommandOK, "NOOP")
 	return err
 }
 
 // cmd is a helper function to execute a command and check for the expected FTP
 // return code
-func (subC *serverSubConn) cmd(expected int, format string, args ...interface{}) (int, string, error) {
+func (subC *ServerSubConn) cmd(expected int, format string, args ...interface{}) (int, string, error) {
 	_, err := subC.controlStream.Cmd(format, args...)
 	if err != nil {
 		return 0, "", err
@@ -600,14 +605,14 @@ func (subC *serverSubConn) cmd(expected int, format string, args ...interface{})
 }
 
 // Logout issues a REIN FTP command to logout the current user.
-func (subC *serverSubConn) Logout() error {
+func (subC *ServerSubConn) Logout() error {
 	_, _, err := subC.cmd(StatusReady, "REIN")
 	return err
 }
 
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
-func (subC *serverSubConn) Quit() error {
+func (subC *ServerSubConn) Quit() error {
 	subC.controlStream.Cmd("QUIT")
 	return subC.controlStream.Close()
 }

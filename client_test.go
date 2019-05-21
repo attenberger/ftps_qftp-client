@@ -37,39 +37,43 @@ func TestConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	err = c.Login(username, password)
+	subC, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = c.NoOp()
+	err = subC.Login(username, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = subC.NoOp()
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.ChangeDir("incoming")
+	err = subC.ChangeDir("incoming")
 	if err != nil {
 		t.Error(err)
 	}
 
 	data := bytes.NewBufferString(testData)
-	err = c.Stor("test", data)
+	err = subC.Stor("test", data)
 	if err != nil {
 		t.Error(err)
 	}
 
-	_, err = c.List(".")
+	_, err = subC.List(".")
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.Rename("test", "tset")
+	err = subC.Rename("test", "tset")
 	if err != nil {
 		t.Error(err)
 	}
 
-	r, err := c.Retr("tset")
+	r, err := subC.Retr("tset")
 	if err != nil {
 		t.Error(err)
 	} else {
@@ -83,7 +87,7 @@ func TestConn(t *testing.T) {
 		r.Close()
 	}
 
-	r, err = c.RetrFrom("tset", 5)
+	r, err = subC.RetrFrom("tset", 5)
 	if err != nil {
 		t.Error(err)
 	} else {
@@ -98,22 +102,22 @@ func TestConn(t *testing.T) {
 		r.Close()
 	}
 
-	err = c.Delete("tset")
+	err = subC.Delete("tset")
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.MakeDir(testDir)
+	err = subC.MakeDir(testDir)
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.ChangeDir(testDir)
+	err = subC.ChangeDir(testDir)
 	if err != nil {
 		t.Error(err)
 	}
 
-	dir, err := c.CurrentDir()
+	dir, err := subC.CurrentDir()
 	if err != nil {
 		t.Error(err)
 	} else {
@@ -122,12 +126,12 @@ func TestConn(t *testing.T) {
 		}
 	}
 
-	err = c.ChangeDirToParent()
+	err = subC.ChangeDirToParent()
 	if err != nil {
 		t.Error(err)
 	}
 
-	entries, err := c.NameList("/")
+	entries, err := subC.NameList("/")
 	if err != nil {
 		t.Error(err)
 	}
@@ -135,14 +139,14 @@ func TestConn(t *testing.T) {
 		t.Errorf("Unexpected entries: %v", entries)
 	}
 
-	err = c.RemoveDir(testDir)
+	err = subC.RemoveDir(testDir)
 	if err != nil {
 		t.Error(err)
 	}
 
-	c.Quit()
+	subC.Quit()
 
-	err = c.NoOp()
+	err = subC.NoOp()
 	if err == nil {
 		t.Error("Expected error")
 	}
@@ -157,19 +161,23 @@ func TestConnIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	err = c.Login(username, password)
+	subC, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = c.List(".")
+	err = subC.Login(username, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = subC.List(".")
 	if err != nil {
 		t.Error(err)
 	}
 
 	//Not implemented in the server
-	err = c.Logout()
+	err = subC.Logout()
 	if err != nil {
 		if protoErr := err.(*textproto.Error); protoErr != nil {
 			if protoErr.Code != StatusNotImplemented {
@@ -180,7 +188,7 @@ func TestConnIPv6(t *testing.T) {
 		}
 	}
 
-	c.Quit()
+	subC.Quit()
 }
 
 // TestConnect tests the legacy Connect function
@@ -193,8 +201,12 @@ func TestConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	subC, err := c.GetNewSubConn()
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	c.Quit()
+	subC.Quit()
 }
 
 func TestTimeout(t *testing.T) {
@@ -205,7 +217,11 @@ func TestTimeout(t *testing.T) {
 	c, err := DialTimeout(serverIPv4+":94286", 1*time.Second, serverCertificate)
 	if err == nil {
 		t.Fatal("expected timeout, got nil error")
-		c.Quit()
+		subC, err := c.GetNewSubConn()
+		if err != nil {
+			t.Fatal(err)
+		}
+		subC.Quit()
 	}
 }
 
@@ -218,9 +234,13 @@ func TestWrongLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Quit()
+	subC, err := c.GetNewSubConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subC.Quit()
 
-	err = c.Login("zoo2Shia", "fei5Yix9")
+	err = subC.Login("zoo2Shia", "fei5Yix9")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

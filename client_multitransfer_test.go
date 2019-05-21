@@ -11,6 +11,7 @@ package client_ftp
 import (
 	"bytes"
 	"errors"
+	"io"
 	"io/ioutil"
 	"os"
 	"strconv"
@@ -30,11 +31,12 @@ var (
 )
 
 func TestMultiTransfer(t *testing.T) {
-	testMultiTransfer(t, 1)
+	/*testMultiTransfer(t, 1)
 	testMultiTransfer(t, 3)
 	testMultiTransfer(t, 7)
 	testMultiTransfer(t, 15)
-	testMultiTransfer(t, 18)
+	testMultiTransfer(t, 18)*/
+	testMultiTransfer(t, 4)
 }
 
 func testMultiTransfer(t *testing.T, nrParallelConnections int) {
@@ -46,41 +48,73 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	err = c.Login(username, password)
+	subC, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = c.MakeDir(remoteTestDirectory)
+	err = subC.Login(username, password)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = subC.MakeDir(remoteTestDirectory)
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.ChangeDir(remoteTestDirectory)
+	err = subC.ChangeDir(remoteTestDirectory)
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = prepareTestdata(c)
+	err = prepareTestdata(subC)
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.MultipleTransfer(createTransferTasks(), nrParallelConnections)
+	finishedChan := make(chan error)
+
+	currentSub, err := c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
+	go multipleTransfer(currentSub, true, initialLocalFileNumbers[:4], finishedChan)
 
-	// Check remote
-	for _, filenumber := range initialRemoteFileNumbers {
-		err = c.Delete(strconv.Itoa(filenumber) + ".txt")
+	currentSub, err = c.GetNewSubConn()
+	if err != nil {
+		t.Error(err)
+	}
+	go multipleTransfer(currentSub, true, initialLocalFileNumbers[4:], finishedChan)
+
+	currentSub, err = c.GetNewSubConn()
+	if err != nil {
+		t.Error(err)
+	}
+	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[:4], finishedChan)
+
+	currentSub, err = c.GetNewSubConn()
+	if err != nil {
+		t.Error(err)
+	}
+	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[4:], finishedChan)
+
+	for i := 0; i < 4; i++ {
+		err = <-finishedChan
 		if err != nil {
 			t.Error(err)
 		}
 	}
 
-	entries, err := c.NameList(".")
+	// Check remote
+	for _, filenumber := range initialRemoteFileNumbers {
+		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
+		if err != nil {
+			t.Error(err)
+		}
+	}
+
+	entries, err := subC.NameList(".")
 	if err != nil {
 		t.Error(err)
 	}
@@ -108,18 +142,18 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 	}
 
 	for _, filenumber := range initialLocalFileNumbers {
-		err = c.Delete(strconv.Itoa(filenumber) + ".txt")
+		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
 		if err != nil {
 			t.Error(err)
 		}
 	}
 
-	err = c.ChangeDirToParent()
+	err = subC.ChangeDirToParent()
 	if err != nil {
 		t.Error(err)
 	}
 
-	err = c.RemoveDir(remoteTestDirectory)
+	err = subC.RemoveDir(remoteTestDirectory)
 
 	// check local
 	for _, filenr := range initialLocalFileNumbers {
@@ -161,13 +195,13 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 
 	err = os.RemoveAll(localTestDirectory)
 
-	err = c.Quit()
+	err = subC.Quit()
 	if err != nil {
 		t.Error(err)
 	}
 }
 
-func prepareTestdata(conn *ServerConn) error {
+func prepareTestdata(subC *ServerSubConn) error {
 	if _, err := os.Stat(localTestDirectory); os.IsExist(err) {
 		return errors.New("The local test directory already exists.")
 	}
@@ -199,7 +233,7 @@ func prepareTestdata(conn *ServerConn) error {
 
 	for _, filenumber := range initialRemoteFileNumbers {
 		data := bytes.NewBufferString(testData + " " + strconv.Itoa(filenumber))
-		err := conn.Stor(strconv.Itoa(filenumber)+".txt", data)
+		err := subC.Stor(strconv.Itoa(filenumber)+".txt", data)
 		if err != nil {
 			return errors.New("The remote file \"" + strconv.Itoa(filenumber) + ".txt\" can not stored. " + err.Error())
 		}
@@ -207,15 +241,50 @@ func prepareTestdata(conn *ServerConn) error {
 	return nil
 }
 
-func createTransferTasks() []TransferTask {
-	tasks := make([]TransferTask, 0)
-	for _, filenumber := range initialLocalFileNumbers {
-		task := NewTransferTask(Store, strconv.Itoa(filenumber)+".txt", strconv.Itoa(filenumber)+".txt")
-		tasks = append(tasks, task)
+func multipleTransfer(subC *ServerSubConn, store bool, fileNrs []int, result chan error) {
+
+	err := subC.Login(username, password)
+	if err != nil {
+		result <- err
+		return
 	}
-	for _, filenumber := range initialRemoteFileNumbers {
-		task := NewTransferTask(Retrieve, strconv.Itoa(filenumber)+".txt", strconv.Itoa(filenumber)+".txt")
-		tasks = append(tasks, task)
+	err = subC.ChangeDir(remoteTestDirectory)
+	if err != nil {
+		result <- err
+		return
 	}
-	return tasks
+
+	if store {
+		for _, fileNr := range fileNrs {
+			file, err := os.Open(strconv.Itoa(fileNr) + ".txt")
+			if err != nil {
+				result <- err
+				return
+			}
+			defer file.Close()
+			err = subC.Stor(strconv.Itoa(fileNr)+".txt", file)
+			if err != nil {
+				result <- err
+				return
+			}
+		}
+	} else {
+		for _, fileNr := range fileNrs {
+			file, err := os.Create(strconv.Itoa(fileNr) + ".txt")
+			if err != nil {
+				result <- err
+				return
+			}
+			defer file.Close()
+			reader, err := subC.Retr(strconv.Itoa(fileNr) + ".txt")
+			if err != nil {
+				result <- err
+				return
+			}
+			io.Copy(file, reader)
+			reader.Close()
+		}
+	}
+	subC.Quit()
+	result <- nil
 }
