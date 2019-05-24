@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	MaxStreamsPerSession = 3       // like default in vsftpd // but separate limit for uni- and bidirectional streams
-	MaxStreamFlowControl = 6291456 // like OpenSuse TCP /proc/sys/net/ipv4/tcp_rmem
+	MaxStreamsPerSession = 3      // like default in vsftpd // but separate limit for uni- and bidirectional streams
+	MaxStreamFlowControl = 212992 // like OpenSuse TCP /proc/sys/net/core/rmem_max
+	KeepAlive            = true
 )
 
 // ServerConn represents the connection to a remote FTP server.
@@ -89,8 +90,7 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 	config.MaxIncomingStreams = MaxStreamsPerSession
 	config.MaxReceiveStreamFlowControlWindow = MaxStreamFlowControl
 	config.MaxReceiveConnectionFlowControlWindow = MaxStreamFlowControl * (MaxStreamsPerSession + 1) // + 1 buffer for controllstreams
-	config.KeepAlive = true
-	config.IdleTimeout = time.Minute * 5
+	config.KeepAlive = KeepAlive
 	return config
 }
 
