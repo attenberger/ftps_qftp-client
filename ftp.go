@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
-	"github.com/attenberger/quic-go"
+	"github.com/lucas-clemente/quic-go"
 	"io/ioutil"
 	"net/textproto"
 	"sync"

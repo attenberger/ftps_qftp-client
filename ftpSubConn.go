@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"github.com/attenberger/quic-go"
+	"github.com/lucas-clemente/quic-go"
 	"io"
 	"net/textproto"
 	"strconv"
