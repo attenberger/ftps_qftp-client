@@ -11,6 +11,7 @@ package ftpq
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
@@ -36,7 +37,7 @@ func TestMultiTransfer(t *testing.T) {
 	testMultiTransfer(t, 7)
 	testMultiTransfer(t, 15)
 	testMultiTransfer(t, 18)*/
-	testMultiTransfer(t, 4)
+	testMultiTransfer(t, 2)
 }
 
 func testMultiTransfer(t *testing.T, nrParallelConnections int) {
@@ -44,169 +45,74 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 		t.Skip("skipping test in short mode.")
 	}
 
-	c, err := DialTimeout(serverIPv4+":"+strconv.Itoa(servercontrolport), 5*time.Second, serverCertificate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	subC, err := c.GetNewSubConn()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = subC.Login(username, password)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	err = subC.MakeDir(remoteTestDirectory)
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = subC.ChangeDir(remoteTestDirectory)
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = prepareTestdata(subC)
+	err := prepareTestdata()
 	if err != nil {
 		t.Error(err)
 	}
 
 	finishedChan := make(chan error)
 
+	c, err := DialTimeout(serverIPv4+":"+strconv.Itoa(servercontrolport), 5*time.Second, serverCertificate)
+	if err != nil {
+		t.Error(err)
+	}
+
 	currentSub, err := c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
-	go multipleTransfer(currentSub, true, initialLocalFileNumbers[:4], finishedChan)
+	go multipleTransfer(currentSub, true, initialLocalFileNumbers, finishedChan)
 
 	currentSub, err = c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
-	go multipleTransfer(currentSub, true, initialLocalFileNumbers[4:], finishedChan)
+	go multipleTransfer(currentSub, false, initialRemoteFileNumbers, finishedChan)
 
-	currentSub, err = c.GetNewSubConn()
-	if err != nil {
-		t.Error(err)
-	}
-	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[:4], finishedChan)
-
-	currentSub, err = c.GetNewSubConn()
-	if err != nil {
-		t.Error(err)
-	}
-	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[4:], finishedChan)
-
-	for i := 0; i < 4; i++ {
+	for i := 0; i < nrParallelConnections; i++ {
 		err = <-finishedChan
 		if err != nil {
 			t.Error(err)
 		}
 	}
 
-	// Check remote
-	for _, filenumber := range initialRemoteFileNumbers {
-		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
-		if err != nil {
-			t.Error(err)
-		}
-	}
-
-	entries, err := subC.NameList(".")
-	if err != nil {
-		t.Error(err)
-	}
-	if len(entries) != len(initialLocalFileNumbers) {
-		t.Errorf("Unexpected entries: %v", entries)
-	}
-	for _, entry := range entries {
-		stringPart := strings.Split(entry, ".")
-		if len(stringPart) != 2 {
-			t.Errorf("Unexpected entry: %v", entry)
-		}
-		filenumber, err := strconv.Atoi(stringPart[0])
-		if err != nil {
-			t.Errorf("Unexpected entry: %v", entry)
-		}
-		found := false
-		for _, filenr := range initialLocalFileNumbers {
-			if filenumber == filenr {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("Unexpected entry: %v", entry)
-		}
-	}
-
-	for _, filenumber := range initialLocalFileNumbers {
-		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
-		if err != nil {
-			t.Error(err)
-		}
-	}
-
-	err = subC.ChangeDirToParent()
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = subC.RemoveDir(remoteTestDirectory)
-
-	// check local
-	for _, filenr := range initialLocalFileNumbers {
-		err = os.Remove(strconv.Itoa(filenr) + ".txt")
-		if err != nil {
-			t.Error(err)
-		}
-	}
-
-	files, err := ioutil.ReadDir(".")
-	if err != nil {
-		t.Error(err)
-	}
-
-	for _, file := range files {
-		stringPart := strings.Split(file.Name(), ".")
-		if len(stringPart) != 2 {
-			t.Errorf("Unexpected entry: %v", file.Name())
-		}
-		filenumber, err := strconv.Atoi(stringPart[0])
-		if err != nil {
-			t.Errorf("Unexpected entry: %v", file.Name())
-		}
-		found := false
-		for _, filenr := range initialRemoteFileNumbers {
-			if filenumber == filenr {
-				found = true
-			}
-		}
-		if !found {
-			t.Errorf("Unexpected entry: %v", file.Name())
-		}
-	}
-
-	err = os.Chdir("..")
-	if err != nil {
-		t.Error(err)
-	}
-
-	err = os.RemoveAll(localTestDirectory)
-
-	err = subC.Quit()
+	err = checkResult()
 	if err != nil {
 		t.Error(err)
 	}
 }
 
-func prepareTestdata(subC *ServerSubConn) error {
+func prepareTestdata() error {
+
+	c, err := DialTimeout(serverIPv4+":"+strconv.Itoa(servercontrolport), 5*time.Second, serverCertificate)
+	if err != nil {
+		return err
+	}
+	subC, err := c.GetNewSubConn()
+	if err != nil {
+		return err
+	}
+
+	err = subC.Login(username, password)
+	if err != nil {
+		return err
+	}
+
+	err = subC.MakeDir(remoteTestDirectory)
+	if err != nil {
+		return err
+	}
+
+	err = subC.ChangeDir(remoteTestDirectory)
+	if err != nil {
+		return err
+	}
+
 	if _, err := os.Stat(localTestDirectory); os.IsExist(err) {
 		return errors.New("The local test directory already exists.")
 	}
 
-	err := os.Mkdir(localTestDirectory, os.ModeDir)
+	err = os.Mkdir(localTestDirectory, os.ModeDir)
 	if err != nil {
 		return errors.New("The local test directory can not be created. " + err.Error())
 	}
@@ -238,6 +144,11 @@ func prepareTestdata(subC *ServerSubConn) error {
 			return errors.New("The remote file \"" + strconv.Itoa(filenumber) + ".txt\" can not stored. " + err.Error())
 		}
 	}
+
+	err = subC.Quit()
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -261,8 +172,8 @@ func multipleTransfer(subC *ServerSubConn, store bool, fileNrs []int, result cha
 				result <- err
 				return
 			}
-			defer file.Close()
 			err = subC.Stor(strconv.Itoa(fileNr)+".txt", file)
+			file.Close()
 			if err != nil {
 				result <- err
 				return
@@ -275,16 +186,133 @@ func multipleTransfer(subC *ServerSubConn, store bool, fileNrs []int, result cha
 				result <- err
 				return
 			}
-			defer file.Close()
 			reader, err := subC.Retr(strconv.Itoa(fileNr) + ".txt")
 			if err != nil {
 				result <- err
+				file.Close()
 				return
 			}
 			io.Copy(file, reader)
 			reader.Close()
+			file.Close()
 		}
 	}
 	subC.Quit()
 	result <- nil
+}
+
+func checkResult() error {
+
+	c, err := DialTimeout(serverIPv4+":"+strconv.Itoa(servercontrolport), 5*time.Second, serverCertificate)
+	if err != nil {
+		return err
+	}
+
+	subC, err := c.GetNewSubConn()
+	if err != nil {
+		return err
+	}
+	err = subC.Login(username, password)
+	if err != nil {
+		return err
+	}
+	err = subC.ChangeDir(remoteTestDirectory)
+	if err != nil {
+		return err
+	}
+
+	// Check remote
+	for _, filenumber := range initialRemoteFileNumbers {
+		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
+		if err != nil {
+			return err
+		}
+	}
+
+	entries, err := subC.NameList(".")
+	if err != nil {
+		return err
+	}
+	if len(entries) != len(initialLocalFileNumbers) {
+		return errors.New(fmt.Sprintf("Unexpected entries: %v", entries))
+	}
+	for _, entry := range entries {
+		stringPart := strings.Split(entry, ".")
+		if len(stringPart) != 2 {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", entry))
+		}
+		filenumber, err := strconv.Atoi(stringPart[0])
+		if err != nil {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", entry))
+		}
+		found := false
+		for _, filenr := range initialLocalFileNumbers {
+			if filenumber == filenr {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", entry))
+		}
+	}
+
+	for _, filenumber := range initialLocalFileNumbers {
+		err = subC.Delete(strconv.Itoa(filenumber) + ".txt")
+		if err != nil {
+			return err
+		}
+	}
+
+	err = subC.ChangeDirToParent()
+	if err != nil {
+		return err
+	}
+
+	err = subC.RemoveDir(remoteTestDirectory)
+
+	// check local
+	for _, filenr := range initialLocalFileNumbers {
+		err = os.Remove(strconv.Itoa(filenr) + ".txt")
+		if err != nil {
+			return err
+		}
+	}
+
+	files, err := ioutil.ReadDir(".")
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		stringPart := strings.Split(file.Name(), ".")
+		if len(stringPart) != 2 {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", file.Name()))
+		}
+		filenumber, err := strconv.Atoi(stringPart[0])
+		if err != nil {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", file.Name()))
+		}
+		found := false
+		for _, filenr := range initialRemoteFileNumbers {
+			if filenumber == filenr {
+				found = true
+			}
+		}
+		if !found {
+			return errors.New(fmt.Sprintf("Unexpected entry: %v", file.Name()))
+		}
+	}
+
+	err = os.Chdir("..")
+	if err != nil {
+		return err
+	}
+
+	err = os.RemoveAll(localTestDirectory)
+
+	err = subC.Quit()
+	if err != nil {
+		return err
+	}
+	return nil
 }

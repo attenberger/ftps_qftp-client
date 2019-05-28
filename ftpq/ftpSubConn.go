@@ -107,8 +107,8 @@ func (subC *ServerSubConn) Features() map[string]string {
 
 // openNewDataSendStream creates a new FTP data stream to send.
 func (subC *ServerSubConn) getNewDataSendStream() (quic.SendStream, error) {
-	subC.serverConnection.structAccessMutex.Lock()
-	defer subC.serverConnection.structAccessMutex.Unlock()
+	subC.serverConnection.dataStreamOpenMutex.Lock()
+	defer subC.serverConnection.dataStreamOpenMutex.Unlock()
 	return subC.serverConnection.quicSession.OpenUniStreamSync()
 }
 
@@ -200,8 +200,8 @@ func (subC *ServerSubConn) cmdDataSendStreamFrom(offset uint64, format string, a
 
 // openDataRetriveStream creates a new FTP data stream to retrieve.
 func (subC *ServerSubConn) getDataRetriveStream(streamID quic.StreamID) (quic.ReceiveStream, error) {
-	subC.serverConnection.structAccessMutex.Lock()
-	defer subC.serverConnection.structAccessMutex.Unlock()
+	subC.serverConnection.dataStreamAcceptMutex.Lock()
+	defer subC.serverConnection.dataStreamAcceptMutex.Unlock()
 
 	for {
 		stream, available := subC.serverConnection.dataRetriveStreams[streamID]
@@ -576,7 +576,7 @@ func (subC *ServerSubConn) Logout() error {
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
 func (subC *ServerSubConn) Quit() error {
-	subC.controlStream.Cmd("QUIT")
+	subC.cmd(StatusClosing, "QUIT")
 	return subC.controlStream.Close()
 }
 

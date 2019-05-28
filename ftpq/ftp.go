@@ -20,9 +20,11 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	dataRetriveStreams map[quic.StreamID]quic.ReceiveStream
-	quicSession        quic.Session
-	structAccessMutex  sync.Mutex
+	dataRetriveStreams    map[quic.StreamID]quic.ReceiveStream
+	quicSession           quic.Session
+	structAccessMutex     sync.Mutex
+	dataStreamAcceptMutex sync.Mutex
+	dataStreamOpenMutex   sync.Mutex
 }
 
 // Connect is an alias to Dial, for backward compatibility
