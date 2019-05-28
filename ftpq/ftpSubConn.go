@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/attenberger/ftps_qftp-client"
 	"github.com/lucas-clemente/quic-go"
 	"io"
 	"net/textproto"
@@ -12,30 +13,12 @@ import (
 	"time"
 )
 
-// EntryType describes the different types of an Entry.
-type EntryType int
-
-// The differents types of an Entry
-const (
-	EntryTypeFile EntryType = iota
-	EntryTypeFolder
-	EntryTypeLink
-)
-
 // ServerConn represents a subconnection to a remote FTP server
 // with one QUIC-controlstream and optional one QUIC-datastream
 type ServerSubConn struct {
 	serverConnection *ServerConn
 	controlStream    *textproto.Conn
 	features         map[string]string
-}
-
-// Entry describes a file and is returned by List().
-type Entry struct {
-	Name string
-	Type EntryType
-	Size uint64
-	Time time.Time
 }
 
 // response represent a data-connection
@@ -240,7 +223,7 @@ func (subC *ServerSubConn) getDataRetriveStream(streamID quic.StreamID) (quic.Re
 var errUnsupportedListLine = errors.New("Unsupported LIST line")
 
 // parseRFC3659ListLine parses the style of directory line defined in RFC 3659.
-func parseRFC3659ListLine(line string) (*Entry, error) {
+func parseRFC3659ListLine(line string) (*ftps_qftp_client.Entry, error) {
 	iSemicolon := strings.Index(line, ";")
 	iWhitespace := strings.Index(line, " ")
 
@@ -248,7 +231,7 @@ func parseRFC3659ListLine(line string) (*Entry, error) {
 		return nil, errUnsupportedListLine
 	}
 
-	e := &Entry{
+	e := &ftps_qftp_client.Entry{
 		Name: line[iWhitespace+1:],
 	}
 
@@ -271,12 +254,12 @@ func parseRFC3659ListLine(line string) (*Entry, error) {
 		case "type":
 			switch value {
 			case "dir", "cdir", "pdir":
-				e.Type = EntryTypeFolder
+				e.Type = ftps_qftp_client.EntryTypeFolder
 			case "file":
-				e.Type = EntryTypeFile
+				e.Type = ftps_qftp_client.EntryTypeFile
 			}
 		case "size":
-			e.setSize(value)
+			e.SetSize(value)
 		}
 	}
 	return e, nil
@@ -284,14 +267,14 @@ func parseRFC3659ListLine(line string) (*Entry, error) {
 
 // parseLsListLine parses a directory line in a format based on the output of
 // the UNIX ls command.
-func parseLsListLine(line string) (*Entry, error) {
+func parseLsListLine(line string) (*ftps_qftp_client.Entry, error) {
 	fields := strings.Fields(line)
 	if len(fields) >= 7 && fields[1] == "folder" && fields[2] == "0" {
-		e := &Entry{
-			Type: EntryTypeFolder,
+		e := &ftps_qftp_client.Entry{
+			Type: ftps_qftp_client.EntryTypeFolder,
 			Name: strings.Join(fields[6:], " "),
 		}
-		if err := e.setTime(fields[3:6]); err != nil {
+		if err := e.SetTime(fields[3:6]); err != nil {
 			return nil, err
 		}
 
@@ -299,15 +282,15 @@ func parseLsListLine(line string) (*Entry, error) {
 	}
 
 	if fields[1] == "0" {
-		e := &Entry{
-			Type: EntryTypeFile,
+		e := &ftps_qftp_client.Entry{
+			Type: ftps_qftp_client.EntryTypeFile,
 			Name: strings.Join(fields[7:], " "),
 		}
 
-		if err := e.setSize(fields[2]); err != nil {
+		if err := e.SetSize(fields[2]); err != nil {
 			return nil, err
 		}
-		if err := e.setTime(fields[4:7]); err != nil {
+		if err := e.SetTime(fields[4:7]); err != nil {
 			return nil, err
 		}
 
@@ -318,22 +301,22 @@ func parseLsListLine(line string) (*Entry, error) {
 		return nil, errUnsupportedListLine
 	}
 
-	e := &Entry{}
+	e := &ftps_qftp_client.Entry{}
 	switch fields[0][0] {
 	case '-':
-		e.Type = EntryTypeFile
-		if err := e.setSize(fields[4]); err != nil {
+		e.Type = ftps_qftp_client.EntryTypeFile
+		if err := e.SetSize(fields[4]); err != nil {
 			return nil, err
 		}
 	case 'd':
-		e.Type = EntryTypeFolder
+		e.Type = ftps_qftp_client.EntryTypeFolder
 	case 'l':
-		e.Type = EntryTypeLink
+		e.Type = ftps_qftp_client.EntryTypeLink
 	default:
 		return nil, errors.New("Unknown entry type")
 	}
 
-	if err := e.setTime(fields[5:8]); err != nil {
+	if err := e.SetTime(fields[5:8]); err != nil {
 		return nil, err
 	}
 
@@ -348,8 +331,8 @@ var dirTimeFormats = []string{
 
 // parseDirListLine parses a directory line in a format based on the output of
 // the MS-DOS DIR command.
-func parseDirListLine(line string) (*Entry, error) {
-	e := &Entry{}
+func parseDirListLine(line string) (*ftps_qftp_client.Entry, error) {
+	e := &ftps_qftp_client.Entry{}
 	var err error
 
 	// Try various time formats that DIR might use, and stop when one works.
@@ -367,7 +350,7 @@ func parseDirListLine(line string) (*Entry, error) {
 
 	line = strings.TrimLeft(line, " ")
 	if strings.HasPrefix(line, "<DIR>") {
-		e.Type = EntryTypeFolder
+		e.Type = ftps_qftp_client.EntryTypeFolder
 		line = strings.TrimPrefix(line, "<DIR>")
 	} else {
 		space := strings.Index(line, " ")
@@ -378,7 +361,7 @@ func parseDirListLine(line string) (*Entry, error) {
 		if err != nil {
 			return nil, errUnsupportedListLine
 		}
-		e.Type = EntryTypeFile
+		e.Type = ftps_qftp_client.EntryTypeFile
 		line = line[space:]
 	}
 
@@ -386,7 +369,7 @@ func parseDirListLine(line string) (*Entry, error) {
 	return e, nil
 }
 
-var listLineParsers = []func(line string) (*Entry, error){
+var listLineParsers = []func(line string) (*ftps_qftp_client.Entry, error){
 	parseRFC3659ListLine,
 	parseLsListLine,
 	parseDirListLine,
@@ -394,7 +377,7 @@ var listLineParsers = []func(line string) (*Entry, error){
 
 // parseListLine parses the various non-standard format returned by the LIST
 // FTP command.
-func parseListLine(line string) (*Entry, error) {
+func parseListLine(line string) (*ftps_qftp_client.Entry, error) {
 	for _, f := range listLineParsers {
 		e, err := f(line)
 		if err == errUnsupportedListLine {
@@ -404,26 +387,6 @@ func parseListLine(line string) (*Entry, error) {
 		return e, err
 	}
 	return nil, errUnsupportedListLine
-}
-
-func (e *Entry) setSize(str string) (err error) {
-	e.Size, err = strconv.ParseUint(str, 0, 64)
-	return
-}
-
-func (e *Entry) setTime(fields []string) (err error) {
-	var timeStr string
-	if strings.Contains(fields[2], ":") { // this year
-		thisYear, _, _ := time.Now().Date()
-		timeStr = fields[1] + " " + fields[0] + " " + strconv.Itoa(thisYear)[2:4] + " " + fields[2] + " GMT"
-	} else { // not this year
-		if len(fields[2]) != 4 {
-			return errors.New("Invalid year format in time string")
-		}
-		timeStr = fields[1] + " " + fields[0] + " " + fields[2][2:4] + " 00:00 GMT"
-	}
-	e.Time, err = time.Parse("_2 Jan 06 15:04 MST", timeStr)
-	return
 }
 
 // NameList issues an NLST FTP command.
@@ -447,7 +410,7 @@ func (subC *ServerSubConn) NameList(path string) (entries []string, err error) {
 }
 
 // List issues a LIST FTP command.
-func (subC *ServerSubConn) List(path string) (entries []*Entry, err error) {
+func (subC *ServerSubConn) List(path string) (entries []*ftps_qftp_client.Entry, err error) {
 	conn, err := subC.cmdDataReceiveStreamFrom(0, "LIST %s", path)
 	if err != nil {
 		return
