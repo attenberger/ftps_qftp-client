@@ -1,4 +1,4 @@
-package client_ftp
+package ftps
 
 // FTP status codes, defined in RFC 959
 const (

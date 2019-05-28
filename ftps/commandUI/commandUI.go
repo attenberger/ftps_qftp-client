@@ -10,7 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/attenberger/ftps_qftp-client"
+	"github.com/attenberger/ftps_qftp-client/ftps"
 	"io"
 	"log"
 	"os"
@@ -51,7 +51,7 @@ func main() {
 	consoleReader := bufio.NewReader(os.Stdin)
 
 	// setup ftp connection
-	connection, err := client_ftp.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30, *cert)
+	connection, err := ftps.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30, *cert)
 	if err != nil {
 		fmt.Println("Error opening connection to server: " + err.Error())
 		return
@@ -107,11 +107,11 @@ func main() {
 
 // Generates a map of functions for all supported commands of the userinterface.
 // The commands are not necessarily FTP-Commands.
-func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, parameters ...string) error {
+func generateFunctionsMap() map[string]func(connection *ftps.ServerConn, parameters ...string) error {
 
-	var functions = make(map[string]func(connection *client_ftp.ServerConn, parameters ...string) error)
+	var functions = make(map[string]func(connection *ftps.ServerConn, parameters ...string) error)
 
-	functions["AUTH"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["AUTH"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 1 {
 			return errors.New("Please use AUTH-command in the following pattern \"AUTH Method\".")
 		} else if strings.ToUpper(parameters[0]) != "TLS" {
@@ -120,35 +120,35 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return connection.AuthTLS()
 	}
 
-	functions["CDUP"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["CDUP"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("CDUP accepts no parameter.")
 		}
 		return connection.ChangeDirToParent()
 	}
 
-	functions["CLD"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["CLD"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 1 {
 			return errors.New("CLD needs one parameter")
 		}
 		return os.Chdir(parameters[0])
 	}
 
-	functions["CWD"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["CWD"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("CWD needs one parameter.")
 		}
 		return connection.ChangeDir(parameters[0])
 	}
 
-	functions["DELE"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["DELE"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("DELE needs one parameter.")
 		}
 		return connection.Delete(parameters[0])
 	}
 
-	functions["FEAT"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["FEAT"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("FEAT accepts no parameter.")
 		}
@@ -158,8 +158,8 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["LIST"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
-		var entrys []*client_ftp.Entry
+	functions["LIST"] = func(connection *ftps.ServerConn, parameters ...string) error {
+		var entrys []*ftps.Entry
 		var err error
 		switch len(parameters) {
 		case 0:
@@ -175,11 +175,11 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		for _, entry := range entrys {
 			var typeChar string
 			switch entry.Type {
-			case client_ftp.EntryTypeFile:
+			case ftps.EntryTypeFile:
 				typeChar = "-"
-			case client_ftp.EntryTypeFolder:
+			case ftps.EntryTypeFolder:
 				typeChar = "d"
-			case client_ftp.EntryTypeLink:
+			case ftps.EntryTypeLink:
 				typeChar = "l"
 			default:
 				typeChar = "?"
@@ -189,28 +189,28 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["LOGIN"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["LOGIN"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("Please use LOGIN-command in the following pattern \"LOGIN Username Password\".")
 		}
 		return connection.Login(parameters[0], parameters[1])
 	}
 
-	functions["LOGOUT"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["LOGOUT"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("LOGOUT accepts no parameter.")
 		}
 		return connection.Logout()
 	}
 
-	functions["MKD"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["MKD"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("MKD needs one parameter.")
 		}
 		return connection.MakeDir(parameters[0])
 	}
 
-	functions["MTRAN"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["MTRAN"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) < 4 || len(parameters)%3 != 1 {
 			return errors.New("MTRAN needs at least four parameters. The first has to be the number of parallel connection, " +
 				"the rest each a triple of transferdirection, local- and remotepath. Transferdirection is indicated by \"<\" " +
@@ -220,18 +220,18 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		if err != nil {
 			return errors.New("Error converting number of parallel connections. " + err.Error())
 		}
-		tasks := make([]client_ftp.TransferTask, 0, (len(parameters)-1)/3)
+		tasks := make([]ftps.TransferTask, 0, (len(parameters)-1)/3)
 		for i := 1; i < len(parameters); i = i + 3 {
-			var direction client_ftp.TransferDirction
+			var direction ftps.TransferDirction
 			switch parameters[i] {
 			case "<":
-				direction = client_ftp.Retrieve
+				direction = ftps.Retrieve
 			case ">":
-				direction = client_ftp.Store
+				direction = ftps.Store
 			default:
 				return errors.New(parameters[i] + " is not a vaild transfer direction. \"<\" or \">\" expected.")
 			}
-			tasks = append(tasks, client_ftp.NewTransferTask(direction, parameters[i+1], parameters[i+2]))
+			tasks = append(tasks, ftps.NewTransferTask(direction, parameters[i+1], parameters[i+2]))
 		}
 		err = connection.MultipleTransfer(tasks, parallelConnection)
 		if err != nil {
@@ -240,7 +240,7 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["NLST"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["NLST"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		var entrys []string
 		var err error
 		switch len(parameters) {
@@ -260,21 +260,21 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["NOOP"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["NOOP"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("NOOP accepts no parameter.")
 		}
 		return connection.NoOp()
 	}
 
-	functions["QUIT"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["QUIT"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("QUIT accepts no parameter.")
 		}
 		return connection.Quit()
 	}
 
-	functions["PWD"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["PWD"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("PWD accepts no parameter.")
 		}
@@ -286,14 +286,14 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["RENAME"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["RENAME"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("RENAME needs two parameters. Rename of files with whitespaces is in this version not possible.")
 		}
 		return connection.Rename(parameters[0], parameters[1])
 	}
 
-	functions["RETR"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["RETR"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("RETR needs two parameter.")
 		}
@@ -329,14 +329,14 @@ func generateFunctionsMap() map[string]func(connection *client_ftp.ServerConn, p
 		return nil
 	}
 
-	functions["RMD"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["RMD"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("RKD needs one parameter.")
 		}
 		return connection.RemoveDir(parameters[0])
 	}
 
-	functions["STOR"] = func(connection *client_ftp.ServerConn, parameters ...string) error {
+	functions["STOR"] = func(connection *ftps.ServerConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("STOR needs two parameter.")
 		}

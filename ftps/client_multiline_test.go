@@ -1,4 +1,4 @@
-package client_ftp
+package ftps
 
 import (
 	"net"

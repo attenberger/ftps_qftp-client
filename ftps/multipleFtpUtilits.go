@@ -1,7 +1,7 @@
 // Contains the functions for parallel transfer with multiple TCP connections.
 // Store and receive of files is possible.
 
-package client_ftp
+package ftps
 
 import (
 	"errors"
