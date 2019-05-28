@@ -1,4 +1,4 @@
-package client_ftp
+package ftpq
 
 import (
 	"testing"

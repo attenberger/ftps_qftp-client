@@ -6,7 +6,7 @@
 // The root directory of your FTPS-Server must contain
 // the directory "incoming".
 
-package client_ftp
+package ftpq
 
 import (
 	"bytes"

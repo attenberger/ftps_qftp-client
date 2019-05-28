@@ -1,5 +1,5 @@
 // Package ftp implements a FTP client as described in RFC 959.
-package client_ftp
+package ftpq
 
 import (
 	"crypto/tls"

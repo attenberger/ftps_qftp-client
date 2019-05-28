@@ -10,7 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/attenberger/ftps_qftp-client"
+	"github.com/attenberger/ftps_qftp-client/ftpq"
 	"io"
 	"log"
 	"os"
@@ -51,7 +51,7 @@ func main() {
 	consoleReader := bufio.NewReader(os.Stdin)
 
 	// setup ftp connection
-	connection, err := client_ftp.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30, *cert)
+	connection, err := ftpq.DialTimeout(*host+":"+strconv.Itoa(*port), time.Second*30, *cert)
 	if err != nil {
 		fmt.Println("Error opening connection to server: " + err.Error())
 		return
@@ -120,7 +120,7 @@ func main() {
 
 // MultipleTransfer issues parallel FTP commands in parallel connections to store multiple files
 // to the remote FTP server.
-func multipleTransfer(connection *client_ftp.ServerConn, subConnection *client_ftp.ServerSubConn, username string, password string, parameters ...string) error {
+func multipleTransfer(connection *ftpq.ServerConn, subConnection *ftpq.ServerSubConn, username string, password string, parameters ...string) error {
 	if len(parameters) < 4 || len(parameters)%3 != 1 {
 		return errors.New("MTRAN needs at least four parameters. The first has to be the number of parallel subConnection, " +
 			"the rest each a triple of transferdirection, local- and remotepath. Transferdirection is indicated by \"<\" " +
@@ -207,39 +207,39 @@ func multipleTransfer(connection *client_ftp.ServerConn, subConnection *client_f
 
 // Generates a map of functions for all supported commands of the userinterface.
 // The commands are not necessarily FTP-Commands.
-func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+func generateFunctionsMap() map[string]func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 
-	var functions = make(map[string]func(subConnection *client_ftp.ServerSubConn, parameters ...string) error)
+	var functions = make(map[string]func(subConnection *ftpq.ServerSubConn, parameters ...string) error)
 
-	functions["CDUP"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["CDUP"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("CDUP accepts no parameter.")
 		}
 		return subConnection.ChangeDirToParent()
 	}
 
-	functions["CLD"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["CLD"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 1 {
 			return errors.New("CLD needs one parameter")
 		}
 		return os.Chdir(parameters[0])
 	}
 
-	functions["CWD"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["CWD"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("CWD needs one parameter.")
 		}
 		return subConnection.ChangeDir(parameters[0])
 	}
 
-	functions["DELE"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["DELE"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("DELE needs one parameter.")
 		}
 		return subConnection.Delete(parameters[0])
 	}
 
-	functions["FEAT"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["FEAT"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("FEAT accepts no parameter.")
 		}
@@ -249,8 +249,8 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		return nil
 	}
 
-	functions["LIST"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
-		var entrys []*client_ftp.Entry
+	functions["LIST"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
+		var entrys []*ftpq.Entry
 		var err error
 		switch len(parameters) {
 		case 0:
@@ -266,11 +266,11 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		for _, entry := range entrys {
 			var typeChar string
 			switch entry.Type {
-			case client_ftp.EntryTypeFile:
+			case ftpq.EntryTypeFile:
 				typeChar = "-"
-			case client_ftp.EntryTypeFolder:
+			case ftpq.EntryTypeFolder:
 				typeChar = "d"
-			case client_ftp.EntryTypeLink:
+			case ftpq.EntryTypeLink:
 				typeChar = "l"
 			default:
 				typeChar = "?"
@@ -280,28 +280,28 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		return nil
 	}
 
-	functions["LOGIN"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["LOGIN"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("Please use LOGIN-command in the following pattern \"LOGIN Username Password\".")
 		}
 		return subConnection.Login(parameters[0], parameters[1])
 	}
 
-	functions["LOGOUT"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["LOGOUT"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("LOGOUT accepts no parameter.")
 		}
 		return subConnection.Logout()
 	}
 
-	functions["MKD"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["MKD"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("MKD needs one parameter.")
 		}
 		return subConnection.MakeDir(parameters[0])
 	}
 
-	functions["NLST"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["NLST"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		var entrys []string
 		var err error
 		switch len(parameters) {
@@ -321,21 +321,21 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		return nil
 	}
 
-	functions["NOOP"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["NOOP"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("NOOP accepts no parameter.")
 		}
 		return subConnection.NoOp()
 	}
 
-	functions["QUIT"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["QUIT"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("QUIT accepts no parameter.")
 		}
 		return subConnection.Quit()
 	}
 
-	functions["PWD"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["PWD"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 0 {
 			return errors.New("PWD accepts no parameter.")
 		}
@@ -347,14 +347,14 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		return nil
 	}
 
-	functions["RENAME"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["RENAME"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("RENAME needs two parameters. Rename of files with whitespaces is in this version not possible.")
 		}
 		return subConnection.Rename(parameters[0], parameters[1])
 	}
 
-	functions["RETR"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["RETR"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("RETR needs two parameter.")
 		}
@@ -390,14 +390,14 @@ func generateFunctionsMap() map[string]func(subConnection *client_ftp.ServerSubC
 		return nil
 	}
 
-	functions["RMD"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["RMD"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) < 1 {
 			return errors.New("RKD needs one parameter.")
 		}
 		return subConnection.RemoveDir(parameters[0])
 	}
 
-	functions["STOR"] = func(subConnection *client_ftp.ServerSubConn, parameters ...string) error {
+	functions["STOR"] = func(subConnection *ftpq.ServerSubConn, parameters ...string) error {
 		if len(parameters) != 2 {
 			return errors.New("STOR needs two parameter.")
 		}
@@ -443,7 +443,7 @@ func NewTransferTask(direction TransferDirction, localpath string, remotepath st
 // Runs a parallel transfer.
 // In the taskChannel it gets the TransferTask to perform.
 // In the returnChannel it returns occured error or nil for success
-func parallelTransfer(subC *client_ftp.ServerSubConn, username string, password string, dirctory string, taskChannel chan TransferTask, returnChannel chan error) {
+func parallelTransfer(subC *ftpq.ServerSubConn, username string, password string, dirctory string, taskChannel chan TransferTask, returnChannel chan error) {
 
 	defer subC.Quit()
 	// Login in
@@ -475,7 +475,7 @@ func parallelTransfer(subC *client_ftp.ServerSubConn, username string, password 
 }
 
 // Stores a file at the server within a parallel transfer.
-func parallelStorTask(task TransferTask, subC *client_ftp.ServerSubConn) error {
+func parallelStorTask(task TransferTask, subC *ftpq.ServerSubConn) error {
 	file, err := os.Open(task.localpath)
 	defer file.Close()
 	if err != nil {
@@ -490,7 +490,7 @@ func parallelStorTask(task TransferTask, subC *client_ftp.ServerSubConn) error {
 }
 
 // Receives a file at the server within a parallel transfer.
-func parallelRetrTask(task TransferTask, subC *client_ftp.ServerSubConn) error {
+func parallelRetrTask(task TransferTask, subC *ftpq.ServerSubConn) error {
 	// Check if file already exists at client
 	if _, err := os.Stat(task.localpath); os.IsExist(err) {
 		return errors.New("File with this name already exists in local folder.")
