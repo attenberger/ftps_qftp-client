@@ -1,10 +1,13 @@
 // Package ftp implements a FTP client as described in RFC 959.
-package ftp
+package ftps
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/textproto"
 	"strconv"
@@ -24,10 +27,18 @@ const (
 
 // ServerConn represents the connection to a remote FTP server.
 type ServerConn struct {
-	conn     *textproto.Conn
-	host     string
-	timeout  time.Duration
-	features map[string]string
+	conn                        *textproto.Conn
+	tcpconn                     net.Conn
+	tlsConfig                   *tls.Config
+	tlsSecuredControlConnection bool
+	tlsSecuredDataConnection    bool
+	hostname                    string
+	hostcontrolport             string
+	username                    string
+	password                    string
+	certfilename                string
+	timeout                     time.Duration
+	features                    map[string]string
 }
 
 // Entry describes a file and is returned by List().
@@ -45,20 +56,20 @@ type response struct {
 }
 
 // Connect is an alias to Dial, for backward compatibility
-func Connect(addr string) (*ServerConn, error) {
-	return Dial(addr)
+func Connect(addr string, certfile string) (*ServerConn, error) {
+	return Dial(addr, certfile)
 }
 
 // Dial is like DialTimeout with no timeout
-func Dial(addr string) (*ServerConn, error) {
-	return DialTimeout(addr, 0)
+func Dial(addr string, certfile string) (*ServerConn, error) {
+	return DialTimeout(addr, 0, certfile)
 }
 
 // DialTimeout initializes the connection to the specified ftp server address.
 //
 // It is generally followed by a call to Login() as most FTP commands require
 // an authenticated user.
-func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
+func DialTimeout(addr string, timeout time.Duration, certfile string) (*ServerConn, error) {
 	tconn, err := net.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return nil, err
@@ -66,19 +77,31 @@ func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
 
 	// Use the resolved IP address in case addr contains a domain name
 	// If we use the domain name, we might not resolve to the same IP.
-	remoteAddr := tconn.RemoteAddr().String()
-	host, _, err := net.SplitHostPort(remoteAddr)
+	//remoteAddr := tconn.RemoteAddr().String()
+	//addr, _, err = net.SplitHostPort(remoteAddr)
+	addr, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, err
 	}
 
+	var tlsConfig tls.Config
 	conn := textproto.NewConn(tconn)
+	if certfile != "" {
+		tlsConfig, err = generateTLSConfig(certfile)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	c := &ServerConn{
-		conn:     conn,
-		host:     host,
-		timeout:  timeout,
-		features: make(map[string]string),
+		conn:            conn,
+		tcpconn:         tconn,
+		tlsConfig:       &tlsConfig,
+		hostname:        addr,
+		hostcontrolport: port,
+		certfilename:    certfile,
+		timeout:         timeout,
+		features:        make(map[string]string),
 	}
 
 	_, _, err = c.conn.ReadResponse(StatusReady)
@@ -94,6 +117,50 @@ func DialTimeout(addr string, timeout time.Duration) (*ServerConn, error) {
 	}
 
 	return c, nil
+}
+
+// Generates from the specified certifiate file a tls configuration
+func generateTLSConfig(certfile string) (tls.Config, error) {
+	tlsConfig := tls.Config{}
+	tlsConfig.InsecureSkipVerify = true
+	certficate, err := ioutil.ReadFile(certfile)
+	if err != nil {
+		return tlsConfig, err
+	}
+	rootCAs := x509.NewCertPool()
+	if !rootCAs.AppendCertsFromPEM([]byte(certficate)) {
+		return tlsConfig, errors.New("ERROR: Fehler beim parsen des Serverzertifikats.\n")
+	}
+	return tlsConfig, nil
+}
+
+// Negotiates TLS for the connection
+func (c *ServerConn) AuthTLS() error {
+	if c.tlsConfig == nil {
+		return errors.New("TLS-configuration ist missing.")
+	}
+
+	// Secure control connection
+	_, _, err := c.cmd(StatusAuthTLS, "AUTH TLS")
+	if err != nil {
+		return errors.New("Error while AUTH TLS command. " + err.Error())
+	}
+	c.conn = textproto.NewConn(tls.Client(c.tcpconn, c.tlsConfig))
+	c.tlsSecuredControlConnection = true
+
+	// Secure data connection
+	_, _, err = c.cmd(StatusCommandOK, "PBSZ 0")
+	if err != nil {
+		return errors.New("Error while PBSZ 0 command. " + err.Error())
+	}
+
+	_, _, err = c.cmd(StatusCommandOK, "PROT P")
+	if err != nil {
+		return errors.New("Error while PBSZ 0 command. " + err.Error())
+	}
+	c.tlsSecuredDataConnection = true
+
+	return nil
 }
 
 // Login authenticates the client with specified user and password.
@@ -116,6 +183,9 @@ func (c *ServerConn) Login(user, password string) error {
 	default:
 		return errors.New(message)
 	}
+
+	c.username = user
+	c.password = password
 
 	// Switch to binary mode
 	_, _, err = c.cmd(StatusCommandOK, "TYPE I")
@@ -247,9 +317,18 @@ func (c *ServerConn) openDataConn() (net.Conn, error) {
 	}
 
 	// Build the new net address string
-	addr := net.JoinHostPort(c.host, strconv.Itoa(port))
-
-	return net.DialTimeout("tcp", addr, c.timeout)
+	addr := net.JoinHostPort(c.hostname, strconv.Itoa(port))
+	conn, err := net.DialTimeout("tcp", addr, c.timeout)
+	if err != nil {
+		return conn, err
+	}
+	if c.tlsSecuredDataConnection {
+		conn = tls.Client(conn, c.tlsConfig)
+		if conn == nil {
+			return conn, errors.New("Error while seting up tls for the connection.")
+		}
+	}
+	return conn, nil
 }
 
 // Exec runs a command and check for expected code
@@ -616,6 +695,70 @@ func (c *ServerConn) StorFrom(path string, r io.Reader, offset uint64) error {
 
 	_, _, err = c.conn.ReadResponse(StatusClosingDataConnection)
 	return err
+}
+
+// MultipleTransfer issues STOR FTP commands in parallel connections to store multiple files
+// to the remote FTP server.
+// Stor creates the specified files as specified in tasks. The number of parallel
+// connections can be limited. nrParallel < 0 means no limit
+//
+// Hint: io.Pipe() can be used if an io.Writer is required.
+func (c *ServerConn) MultipleTransfer(tasks []TransferTask, nrParallel int) error {
+	currentdirctory, err := c.CurrentDir()
+	if err != nil {
+		return err
+	}
+
+	// Not more connections than files to store or negative
+	if len(tasks) < nrParallel || nrParallel < 0 {
+		nrParallel = len(tasks)
+	}
+
+	// Write all tasks to the channel including the finishing message
+	taskChannel := make(chan TransferTask, len(tasks)+nrParallel)
+	returnChannel := make(chan error, len(tasks))
+	for _, task := range tasks {
+		task.finished = false
+		taskChannel <- task
+	}
+	for i := 0; i < nrParallel; i++ {
+		taskChannel <- TransferTask{finished: true}
+	}
+
+	// Start goroutines for parallel connections and provide the channels for communication
+	for i := 0; i < nrParallel-1; i++ {
+		go c.parallelTransfer(c.hostname+":"+c.hostcontrolport, currentdirctory, c.tlsSecuredControlConnection, c.certfilename, taskChannel, returnChannel)
+	}
+	// The main connection is also used for parallel transfer
+	for {
+		task := <-taskChannel
+		if task.finished {
+			break
+		} else if task.direction == Store {
+			returnChannel <- c.parallelStorTask(task)
+		} else if task.direction == Retrieve {
+			returnChannel <- c.parallelRetrTask(task)
+		} else {
+			returnChannel <- errors.New("Unknown direction for transfer.")
+		}
+	}
+
+	errorMessage := ""
+	// Wait for replais of the STORs in the goroutines
+	for normalReplay, goRoutineResetReply := 0, 0; normalReplay < len(tasks) && goRoutineResetReply < nrParallel; normalReplay++ {
+		replay := <-returnChannel
+		if replay != nil {
+			errorMessage = errorMessage + "\n" + replay.Error()
+			if strings.HasPrefix("Go routine reset.", replay.Error()) {
+				goRoutineResetReply++
+			}
+		}
+	}
+	if errorMessage == "" {
+		return nil
+	} else {
+		return errors.New(errorMessage)
+	}
 }
 
 // Rename renames a file on the remote FTP server.

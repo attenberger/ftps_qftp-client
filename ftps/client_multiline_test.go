@@ -1,4 +1,4 @@
-package ftp
+package ftps
 
 import (
 	"net"
@@ -81,11 +81,11 @@ func TestMultiline(t *testing.T) {
 		t.Skip("skipping test in short mode.")
 	}
 
-	address := "127.0.0.1:2121"
+	address := "127.0.0.1:21212"
 	mock := newFtpMock(t, address)
 	defer mock.Close()
 
-	c, err := Dial(address)
+	c, err := Dial(address, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestMultiline(t *testing.T) {
 	// Wait for the connection to close
 	mock.Wait()
 
-	expected := []string{"FEAT", "USER", "PASS", "TYPE", "QUIT"}
+	expected := []string{"FEAT", "USER", "PASS", "TYPE", "FEAT", "QUIT"}
 	if !reflect.DeepEqual(mock.commands, expected) {
 		t.Fatal("unexpected sequence of commands:", mock.commands, "expected:", expected)
 	}
