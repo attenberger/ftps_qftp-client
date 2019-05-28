@@ -95,6 +95,9 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 // In the taskChannel it gets the TransferTask to perform.
 // In the returnChannel it returns occured error or nil for success
 func (c *ServerConn) GetNewSubConn() (*ServerSubConn, error) {
+	c.structAccessMutex.Lock()
+	defer c.structAccessMutex.Unlock()
+
 	// Open Controlstream
 	controlStreamRaw, err := c.quicSession.OpenStreamSync()
 	if err != nil {
