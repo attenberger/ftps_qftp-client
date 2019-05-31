@@ -57,25 +57,25 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 		t.Error(err)
 	}
 
-	currentSub, err := c.GetNewSubConn()
+	currentSub, _, err := c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
 	go multipleTransfer(currentSub, true, initialLocalFileNumbers[:4], finishedChan)
 
-	currentSub, err = c.GetNewSubConn()
+	currentSub, _, err = c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
 	go multipleTransfer(currentSub, true, initialLocalFileNumbers[4:], finishedChan)
 
-	currentSub, err = c.GetNewSubConn()
+	currentSub, _, err = c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
 	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[:4], finishedChan)
 
-	currentSub, err = c.GetNewSubConn()
+	currentSub, _, err = c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
@@ -100,7 +100,7 @@ func prepareTestdata() error {
 	if err != nil {
 		return err
 	}
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		return err
 	}
@@ -220,7 +220,7 @@ func checkResult() error {
 		return err
 	}
 
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		return err
 	}

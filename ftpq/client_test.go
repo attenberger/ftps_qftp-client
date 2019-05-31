@@ -37,7 +37,7 @@ func TestConn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestConnIPv6(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestTimeout(t *testing.T) {
 	c, err := DialTimeout(serverIPv4+":94286", 1*time.Second, serverCertificate)
 	if err == nil {
 		t.Fatal("expected timeout, got nil error")
-		subC, err := c.GetNewSubConn()
+		subC, _, err := c.GetNewSubConn()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +234,7 @@ func TestWrongLogin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	subC, err := c.GetNewSubConn()
+	subC, _, err := c.GetNewSubConn()
 	if err != nil {
 		t.Fatal(err)
 	}
