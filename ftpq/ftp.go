@@ -8,6 +8,7 @@ import (
 	"github.com/lucas-clemente/quic-go"
 	"io/ioutil"
 	"net/textproto"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -93,17 +94,16 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 	return config
 }
 
-// Runs a parallel transfer.
-// In the taskChannel it gets the TransferTask to perform.
-// In the returnChannel it returns occured error or nil for success
-func (c *ServerConn) GetNewSubConn() (*ServerSubConn, error) {
+// Opens a new subconnection (stream) in the quic-Connection.
+// It returns the subconnection the server-greeting and in case th occured error.
+func (c *ServerConn) GetNewSubConn() (*ServerSubConn, string, error) {
 	c.structAccessMutex.Lock()
 	defer c.structAccessMutex.Unlock()
 
 	// Open Controlstream
 	controlStreamRaw, err := c.quicSession.OpenStreamSync()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	controlStream := textproto.NewConn(controlStreamRaw)
@@ -114,5 +114,17 @@ func (c *ServerConn) GetNewSubConn() (*ServerSubConn, error) {
 		features:         make(map[string]string),
 	}
 
-	return subC, nil
+	code, message, err := subC.cmd(StatusReady, "HELLO")
+	if err != nil {
+		subC.Quit()
+		return nil, "", err
+	}
+
+	err = subC.Feat()
+	if err != nil {
+		subC.Quit()
+		return nil, "", err
+	}
+
+	return subC, strconv.Itoa(code) + " " + message, nil
 }

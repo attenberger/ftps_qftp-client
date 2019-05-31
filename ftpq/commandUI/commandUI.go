@@ -57,11 +57,12 @@ func main() {
 		fmt.Println("Error opening connection to server: " + err.Error())
 		return
 	}
-	subConnection, err := connection.GetNewSubConn()
+	subConnection, greeting, err := connection.GetNewSubConn()
 	if err != nil {
 		fmt.Println(err.Error())
 		return
 	}
+	fmt.Println(greeting)
 
 	username := ""
 	password := ""
@@ -167,7 +168,7 @@ func multipleTransfer(connection *ftpq.ServerConn, subConnection *ftpq.ServerSub
 
 	// Start goroutines for parallel connections and provide the channels for communication
 	for i := 0; i < parallelConnection; i++ {
-		subC, err := connection.GetNewSubConn()
+		subC, _, err := connection.GetNewSubConn()
 		if err != nil {
 			fmt.Println(err)
 		} else {

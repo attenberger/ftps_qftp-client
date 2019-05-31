@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/attenberger/ftps_qftp-client"
 	"github.com/attenberger/ftps_qftp-client/ftps"
 	"io"
 	"log"
@@ -159,7 +160,7 @@ func generateFunctionsMap() map[string]func(connection *ftps.ServerConn, paramet
 	}
 
 	functions["LIST"] = func(connection *ftps.ServerConn, parameters ...string) error {
-		var entrys []*ftps.Entry
+		var entrys []*ftps_qftp_client.Entry
 		var err error
 		switch len(parameters) {
 		case 0:
@@ -175,11 +176,11 @@ func generateFunctionsMap() map[string]func(connection *ftps.ServerConn, paramet
 		for _, entry := range entrys {
 			var typeChar string
 			switch entry.Type {
-			case ftps.EntryTypeFile:
+			case ftps_qftp_client.EntryTypeFile:
 				typeChar = "-"
-			case ftps.EntryTypeFolder:
+			case ftps_qftp_client.EntryTypeFolder:
 				typeChar = "d"
-			case ftps.EntryTypeLink:
+			case ftps_qftp_client.EntryTypeLink:
 				typeChar = "l"
 			default:
 				typeChar = "?"
