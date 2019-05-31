@@ -10,6 +10,9 @@ type ConnectionI interface {
 	// that allows anonymous read-only accounts.
 	Login(user, password string) error
 
+	// Negotiates TLS for the connection
+	AuthTLS() error
+
 	// feat issues a FEAT FTP command to list the additional commands supported by
 	// the remote FTP server.
 	// FEAT is described in RFC 2389

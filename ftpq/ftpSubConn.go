@@ -27,6 +27,11 @@ type response struct {
 	c    *ServerSubConn
 }
 
+// Dummy function to have the same interface as the FTPS-Client
+func (subC *ServerSubConn) AuthTLS() error {
+	return nil
+}
+
 // Login authenticates the client with specified user and password.
 //
 // "anonymous"/"anonymous" is a common user/password scheme for FTP servers
