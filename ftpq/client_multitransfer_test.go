@@ -37,7 +37,7 @@ func TestMultiTransfer(t *testing.T) {
 	testMultiTransfer(t, 7)
 	testMultiTransfer(t, 15)
 	testMultiTransfer(t, 18)*/
-	testMultiTransfer(t, 2)
+	testMultiTransfer(t, 4)
 }
 
 func testMultiTransfer(t *testing.T, nrParallelConnections int) {
@@ -61,13 +61,25 @@ func testMultiTransfer(t *testing.T, nrParallelConnections int) {
 	if err != nil {
 		t.Error(err)
 	}
-	go multipleTransfer(currentSub, true, initialLocalFileNumbers, finishedChan)
+	go multipleTransfer(currentSub, true, initialLocalFileNumbers[:4], finishedChan)
 
 	currentSub, err = c.GetNewSubConn()
 	if err != nil {
 		t.Error(err)
 	}
-	go multipleTransfer(currentSub, false, initialRemoteFileNumbers, finishedChan)
+	go multipleTransfer(currentSub, true, initialLocalFileNumbers[4:], finishedChan)
+
+	currentSub, err = c.GetNewSubConn()
+	if err != nil {
+		t.Error(err)
+	}
+	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[:4], finishedChan)
+
+	currentSub, err = c.GetNewSubConn()
+	if err != nil {
+		t.Error(err)
+	}
+	go multipleTransfer(currentSub, false, initialRemoteFileNumbers[4:], finishedChan)
 
 	for i := 0; i < nrParallelConnections; i++ {
 		err = <-finishedChan
