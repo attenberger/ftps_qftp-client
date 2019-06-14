@@ -98,10 +98,10 @@ func generateQUICConfig(timeout time.Duration) *quic.Config {
 // It returns the subconnection the server-greeting and in case th occured error.
 func (c *ServerConn) GetNewSubConn() (*ServerSubConn, string, error) {
 	c.structAccessMutex.Lock()
-	defer c.structAccessMutex.Unlock()
 
 	// Open Controlstream
 	controlStreamRaw, err := c.quicSession.OpenStreamSync()
+	c.structAccessMutex.Unlock()
 	if err != nil {
 		return nil, "", err
 	}
