@@ -581,7 +581,10 @@ func (subC *ServerSubConn) Logout() error {
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
 func (subC *ServerSubConn) Quit() error {
-	subC.cmd(StatusClosing, "QUIT")
+	_, _, err := subC.cmd(StatusClosing, "QUIT")
+	if err != nil {
+		return err
+	}
 	return subC.controlStream.Close()
 }
 
