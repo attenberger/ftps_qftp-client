@@ -773,7 +773,10 @@ func (c *ServerConn) Logout() error {
 // Quit issues a QUIT FTP command to properly close the connection from the
 // remote FTP server.
 func (c *ServerConn) Quit() error {
-	c.conn.Cmd("QUIT")
+	_, _, err := c.cmd(StatusClosing, "QUIT")
+	if err != nil {
+		return err
+	}
 	return c.conn.Close()
 }
 
